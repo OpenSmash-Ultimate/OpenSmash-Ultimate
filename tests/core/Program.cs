@@ -117,7 +117,7 @@ static class Program
         {
             ServerRegion eu = ServerRegion.ById("eu"), na = ServerRegion.ById("na-east");
             const string naLobby = "na.lobby.opensmashultimate.com:39421";
-            Check(ServerRegion.All.Length == 2 && ServerRegion.All[0] == eu && eu.Lobby == OfficialLobby.Default && eu.Label == "EU", "the first region: EU, the official lobby's default");
+            Check(ServerRegion.All.Length == 3 && ServerRegion.All[0] == eu && eu.Lobby == OfficialLobby.Default && eu.Label == "EU", "the first region: EU, the official lobby's default");
             Check(na != null && na.Lobby == naLobby && na.Label == "NA East" && na.Host == "na.lobby.opensmashultimate.com" && na.Port == 39421, "NA East and its lobby");
             Check(ServerRegion.All.All(r => OfficialLobby.Valid(r.Lobby) && !System.Net.IPAddress.TryParse(r.Host, out _) && r.Host.Any(char.IsLetter)), "every region's lobby is a name, never an address in numbers");
             Check(ServerRegion.ById("NA-East") == na && ServerRegion.ById(" eu ") == eu && ServerRegion.ById("auto") == null && ServerRegion.ById("na") == null && ServerRegion.ById(null) == null, "a region by its id");
@@ -128,6 +128,9 @@ static class Program
                   && ServerRegion.Median(new int[0]) == -1 && ServerRegion.Median(new[] { -1, -1 }) == -1, "the median of the answers that came");
             Check(ServerRegion.Pick(new[] { 20, 90 }) == eu && ServerRegion.Pick(new[] { 90, 20 }) == na, "Auto: the lowest time");
             Check(ServerRegion.Pick(new[] { -1, 140 }) == na && ServerRegion.Pick(new[] { 35, -1 }) == eu, "Auto: the only one that answers");
+            var sa = ServerRegion.ById("sa");
+            Check(sa != null && sa.Lobby == "sa.lobby.opensmashultimate.com:39421" && sa.Label == "South America" && ServerRegion.Pick(new[] { 210, 130, 15 }, eu) == sa
+                  && ServerRegion.Pick(new[] { 25, 120, -1 }, sa) == eu && ServerRegion.Pick(new[] { -1, -1, -1 }, sa) == null, "South America: picked when closest, never when it does not answer");
             Check(ServerRegion.Pick(new[] { -1, -1 }) == null && ServerRegion.Pick(new int[0]) == null, "Auto: none answers, no pick");
             Check(ServerRegion.Pick(new[] { 40, 40 }) == eu, "Auto: the same time, the first region");
             Check(ServerRegion.Pick(new[] { 52, 60 }, na) == na && ServerRegion.Pick(new[] { 60, 52 }, eu) == eu, "Auto: the last pick stays when the other is only a little sooner");
@@ -144,13 +147,13 @@ static class Program
             Check(ServerRegion.Shown(root) == "Auto" && ServerRegion.AutoPick(root).Region == null, "Auto, not measured: shown as Auto");
             // Auto measured with made-up times: North America sooner
             int asked = 0;
-            ServerRegion.Asker = (r, n) => { System.Threading.Interlocked.Increment(ref asked); return r == na ? new[] { 21, 25, 23 } : new[] { 95, 90, 99 }; };
+            ServerRegion.Asker = (r, n) => { System.Threading.Interlocked.Increment(ref asked); return r == na ? new[] { 21, 25, 23 } : r == eu ? new[] { 95, 90, 99 } : new int[0]; };   // (South America: no answer)
             var got = await ServerRegion.Measure(root);
-            Check(got == (na, 23) && asked == 2, "Auto measured: NA East, the median of its answers");
+            Check(got == (na, 23) && asked == 3, "Auto measured: NA East, the median of its answers");
             Check(File.ReadAllText(kept).StartsWith("na-east 23 ") && ServerRegion.Kept(root) == (na, 23), "Auto's pick kept for the game (config/server_region_auto.txt)");
             Check(OfficialLobby.Current(root) == naLobby && ServerRegion.Current(root) == na && ServerRegion.Shown(root) == "Auto (NA East, 23 ms)", "Auto: the lobby is the pick's, shown with its ping");
             Check(OfficialLobby.Page("/status.json", root) == "http://" + naLobby + "/status.json", "the players online and the leaderboard are that region's");
-            Check(OfficialLobby.All(root).SequenceEqual(new[] { naLobby, OfficialLobby.Default }), "every official lobby, the one played on first");
+            Check(OfficialLobby.All(root).SequenceEqual(new[] { naLobby, OfficialLobby.Default, "sa.lobby.opensmashultimate.com:39421" }), "every official lobby, the one played on first");
             // a little sooner in Europe now: it stays; clearly sooner: it moves
             ServerRegion.Asker = (r, n) => r == na ? new[] { 60 } : new[] { 55 };
             Check(await ServerRegion.Measure(root) == (na, 60), "measured again, Europe a little sooner: the pick stays");
@@ -165,7 +168,7 @@ static class Program
             ServerRegion.Asker = (r, n) => { if (r == eu) System.Threading.Thread.Sleep(3000); return new[] { 50 }; };
             var clock = System.Diagnostics.Stopwatch.StartNew();
             int[] ms = await ServerRegion.MeasureAll(200);
-            Check(ms.SequenceEqual(new[] { -1, 50 }) && clock.ElapsedMilliseconds < 2000, "a slow lobby is not waited for: " + clock.ElapsedMilliseconds + " ms");
+            Check(ms.SequenceEqual(new[] { -1, 50, 50 }) && clock.ElapsedMilliseconds < 2000, "a slow lobby is not waited for: " + clock.ElapsedMilliseconds + " ms");
             // nothing kept and no install: this process remembers what it measured
             string none = Path.Combine(dir, "no-install");
             ServerRegion.Asker = (r, n) => r == na ? new[] { 20 } : new[] { 90 };
@@ -664,7 +667,7 @@ static class Program
         bool lobbyOnly = !OnlineCount.Wanted;
         Environment.SetEnvironmentVariable("OPENSMASH_ONLINE_COUNT", null);
         Check(lobbyOnly && OnlineCount.Wanted, "online count: OPENSMASH_ONLINE_COUNT=lobby asks the lobby's own page only");
-        Check(Array.TrueForAll(ServerRegion.All, r => r.Id == "eu" || r.Id == "na-east"), "online count: the regions' ids are the table's");
+        Check(Array.TrueForAll(ServerRegion.All, r => r.Id == "eu" || r.Id == "na-east" || r.Id == "sa"), "online count: the regions' ids are the table's");
 
         FileChecks();
 

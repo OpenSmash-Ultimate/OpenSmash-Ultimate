@@ -14,7 +14,7 @@ namespace OpenSmash.Launcher
 {
     // The COMPETITIVE page (top menu, between MODS and SETTINGS): SSBU Arena's ranked 1v1, the competitive ladder of the
     // same account (OpenSmash itself has mastery points, no ranking). Its top 10 from the accounts service's public
-    // ranked_board (OpenSmash.Core.RankedBoard; All / EU / NA East), each row with the player's fighters (Max_Hamm's stock
+    // ranked_board (OpenSmash.Core.RankedBoard; All / EU / NA East / SA), each row with the player's fighters (Max_Hamm's stock
     // icons as ssbuarena.com serves them: OpenSmash.Core.Fighters), name#tag, tier (its colour) and rating; the main
     // button starts SSBU Arena when it is installed (its launcher writes %LOCALAPPDATA%\SSBU Arena\install_path.txt:
     // OpenSmash.Core.ArenaEdition), else opens its download page; "Full leaderboard" opens ssbuarena.com's. An empty board
@@ -164,7 +164,7 @@ namespace OpenSmash.Launcher
                 float sp = 11 * s * 0.16f;
                 string region = RankedBoard.RegionLabels[_rankedRegion];
                 Theme.Label(g, _rankedRegion == 0 ? "TOP 10  ·  RANKED" : "TOP 10  ·  RANKED  ·  " + region, FM(12 * s, true), A(Theme.Dim), x, top - 52 * s, 20 * s, 12 * s * 0.14f);
-                // (All / EU / NA East: the board's region filter)
+                // (All / EU / NA East / SA: the board's region filter)
                 float rx = x + cw;
                 for (int i = RankedBoard.Regions.Length - 1; i >= 0; i--)
                 {

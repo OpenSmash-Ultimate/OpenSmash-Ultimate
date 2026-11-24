@@ -13,7 +13,7 @@ It is the merge of [WindowSmash](https://github.com/OpenSmash-Ultimate/WindowSma
 
 Play online from the launcher or the game's own menus. The **[website](https://denkishi.github.io/opensmash-site/)** shows who is playing right now, the open rooms and arenas, and the GSP leaderboard, overall and per fighter.
 
-- **A server near you.** Official lobby servers by region (EU and NA East; **Auto** picks the one that answers soonest). They relay every match, so no player's internet address reaches another player, and they take signed-in players: sign in once in the launcher (Discord, or e-mail and password). Epic Online Services is still there for those who choose it (`eos` in `online_server.txt`).
+- **A server near you.** Official lobby servers by region (EU, NA East and South America; **Auto** picks the one that answers soonest). They relay every match, so no player's internet address reaches another player, and they take signed-in players: sign in once in the launcher (Discord, or e-mail and password). Epic Online Services is still there for those who choose it (`eos` in `online_server.txt`).
 - **Rollback netplay** for fights, with no router setup.
 - **GSP ranked** matches and a public leaderboard. Sign in with Discord on the website to see your own GSP and rank and to choose whether your name is shown.
 - **Discord Rich Presence** with Join: friends can see what you play and join your room.
@@ -39,7 +39,7 @@ You need your own copy of the game, version 13.0.5, dumped from your own Switch,
 | Area | What you get | Where |
 | :--- | :--- | :--- |
 | The game | The whole game recompiled for x86-64: menus, every mode, DLC fighters and stages, movies (VP9), music. | here |
-| Online | Official lobby servers by region (EU, NA East) that relay every match, one account for all of them, rollback netplay, GSP ranked and a leaderboard on the website, Discord sign-in and Rich Presence, room codes (`XXXXX-XXXXX`) and LAN rooms. | [Online](#online) |
+| Online | Official lobby servers by region (EU, NA East, South America) that relay every match, one account for all of them, rollback netplay, GSP ranked and a leaderboard on the website, Discord sign-in and Rich Presence, room codes (`XXXXX-XXXXX`) and LAN rooms. | [Online](#online) |
 | Mods | The OpenSmash launcher and mod manager, Skyline plugins, ARCropolis mods, a switch for every mod in the game's settings and in the launcher; native mods written against `hook.h`. | [#62](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/62), [#63](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/63), [#67](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/67) |
 | New fighters | Fighters with a kind and files of their own (up to 16), all eight colours; fighters written as C++ source. | [#67](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/67), [#68](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/68) |
 | Graphics | Vulkan by default (Direct3D 11 stays a choice in `display.ini` and the settings menu); Metal on macOS; shader prewarm and Prepare Shaders; a faster first start. | [#64](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/64), [#26](https://github.com/OpenSmash-Ultimate/OpenSmash-Ultimate/pull/26) |

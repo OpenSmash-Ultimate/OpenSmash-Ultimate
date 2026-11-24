@@ -9,7 +9,7 @@
 //   sent; the private lobby has no server of one's own (reset too);
 // - leaving the official servers for a server of one's own or the LAN shows those rows again: the code and the server
 //   empty, Direct connections back to the game's default ("on");
-// - the server region is one of the official regions (Europe, North America East): "auto" in server_region.txt (the
+// - the server region is one of the official regions (Europe, North America East, South America): "auto" in server_region.txt (the
 //   game's default: the closest) is shown as the region it picks and written only when the player picks one.
 // Keys of the values: "lobby" (auto, private, custom, lan, offline), "code", "server", "direct" (on/off), "region".
 using System;

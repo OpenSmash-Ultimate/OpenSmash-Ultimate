@@ -1,6 +1,6 @@
 // The COMPETITIVE page (top menu, between MODS and SETTINGS), as main's LauncherForm.Competitive.cs: SSBU Arena's ranked
 // 1v1, the competitive ladder of the same account (OpenSmash itself has mastery points, no ranking). Its top 10 from the
-// accounts service's public ranked_board (OpenSmash.Core.RankedBoard; All / EU / NA East: MainWindow.Discord.cs asks it),
+// accounts service's public ranked_board (OpenSmash.Core.RankedBoard; All / EU / NA East / SA: MainWindow.Discord.cs asks it),
 // each row with the player's fighters (Max_Hamm's stock icons as ssbuarena.com serves them: OpenSmash.Core.Fighters),
 // name#tag, tier (its colour) and rating; the main button starts SSBU Arena when it is installed (Windows: its launcher's
 // install_path.txt), else opens its site; "Full leaderboard" opens ssbuarena.com's. An empty board or no answer is said

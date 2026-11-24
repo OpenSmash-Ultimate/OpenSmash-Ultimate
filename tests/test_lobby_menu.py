@@ -878,10 +878,10 @@ class Region(MenuTest):
         """(#448 on main named the default 'public (worldwide, Epic)'. Here "auto" is the official lobby, relay only, and
         its label says so. Epic Online Services are gone (0.5.0): an "eos" line reads as the official lobby.)"""
         m = self.online()
-        self.assertEqual(m.row('Play online in')['value'], 'official lobby (relay only, EU / NA East)')
+        self.assertEqual(m.row('Play online in')['value'], 'official lobby (relay only, EU / NA East / SA)')
         self.assertIn('Server region', m.labels())
         e = self.online('eos')
-        self.assertEqual(e.row('Play online in')['value'], 'official lobby (relay only, EU / NA East)')
+        self.assertEqual(e.row('Play online in')['value'], 'official lobby (relay only, EU / NA East / SA)')
         self.assertIn('Server region', e.labels())
         self.assertNotIn('Epic', ' '.join(e.labels()))
         e.go_to('Play online in')
@@ -895,15 +895,15 @@ class Region(MenuTest):
         self.assertIn('Players on another region are not listed.', r['help'])
         self.assertEqual(m.labels().index('Server region'), m.labels().index('Play online in') + 1)
         m.go_to('Server region')
-        for value, saved in (('EU', 'eu'), ('NA East', 'na-east'), ('Auto (EU, 24 ms)', 'auto')):
+        for value, saved in (('EU', 'eu'), ('NA East', 'na-east'), ('South America', 'sa'), ('Auto (EU, 24 ms)', 'auto')):
             m.key('RIGHT')
             self.assertEqual((m.row('Server region')['value'], m.file('config/server_region.txt')), (value, saved))
         m.key('LEFT')
-        self.assertEqual((m.row('Server region')['value'], m.file('config/server_region.txt')), ('NA East', 'na-east'))
+        self.assertEqual((m.row('Server region')['value'], m.file('config/server_region.txt')), ('South America', 'sa'))
         self.assertIn('Restart now', m.labels())   # (the next start plays there)
         m.key('ESC')
         m.key('ESC')   # (opened again: read from the file)
-        self.assertEqual(m.row('Server region')['value'], 'NA East')
+        self.assertEqual(m.row('Server region')['value'], 'South America')
 
     def test_the_file_as_it_is_read(self):
         for text, value in (('NA-East\n', 'NA East'), ('# mine\neu\n', 'EU'), ('moon\n', 'Auto (NA East, 31 ms)'), ('auto\n', 'Auto (NA East, 31 ms)')):

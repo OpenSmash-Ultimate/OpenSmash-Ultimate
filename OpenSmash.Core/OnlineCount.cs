@@ -1,5 +1,5 @@
 // The players online in one region, from the accounts service's public table lobby_status: one row a product and
-// region (product 'opensmash', region 'eu' / 'na-east': ServerRegion's ids), which each region's lobby keeps up to
+// region (product 'opensmash', region 'eu' / 'na-east' / 'sa': ServerRegion's ids), which each region's lobby keeps up to
 // date. Read with the publishable key over HTTPS (Account.AnonAsync), so the launcher's home page has the count of the
 // selected (or Auto's) region even where the lobby's own plain-HTTP status page cannot be reached.
 //

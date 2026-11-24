@@ -3,7 +3,7 @@
 // points, no ranking), read from the accounts service both games share with the publishable key (anyone may call it):
 //   POST /rest/v1/rpc/ranked_board {p_region, p_search, p_fighter, p_limit, p_offset} ->
 //        [{rank, username, tag, avatar, rating (numeric), games, wins, losses, placed, tier, tier_family, tier_division,
-//          tier_color "#RRGGBB", region ("eu" | "na-east"), region_rank, fighters [{fighter (a display name), games, wins}],
+//          tier_color "#RRGGBB", region ("eu" | "na-east" | "sa"), region_rank, fighters [{fighter (a display name), games, wins}],
 //          total}]
 // as ssbuarena.com's leaderboard reads it (arena-website src/lib/ranked-account.ts). Aggregates only: no account ids.
 // A failure is no answer (null): the page shows that quietly and asks again later; an empty board is an answer.
@@ -41,8 +41,8 @@ namespace OpenSmash.Core
         public const string Rpc = "ranked_board";
         public const string LeaderboardPage = "https://www.ssbuarena.com/leaderboard";
         /// <summary>the region filter's choices: null = every region, then the Arena servers' own names</summary>
-        public static readonly string[] Regions = { null, "eu", "na-east" };
-        public static readonly string[] RegionLabels = { "ALL", "EU", "NA EAST" };
+        public static readonly string[] Regions = { null, "eu", "na-east", "sa" };
+        public static readonly string[] RegionLabels = { "ALL", "EU", "NA EAST", "SA" };
 
         static string Str(JsonElement o, string n, int max = 40)
         {
@@ -93,7 +93,7 @@ namespace OpenSmash.Core
                         Rating = Num(r, "rating"), Games = Math.Max(0, Int(r, "games")), Wins = Math.Max(0, Int(r, "wins")), Losses = Math.Max(0, Int(r, "losses")),
                         Placed = r.TryGetProperty("placed", out var p) && p.ValueKind == JsonValueKind.True,
                         Tier = Str(r, "tier", 24), TierFamily = Str(r, "tier_family", 24), TierColor = Color(Str(r, "tier_color", 7)),
-                        Region = Str(r, "region") is "eu" or "na-east" ? Str(r, "region") : "", RegionRank = Math.Max(0, Long(r, "region_rank")),
+                        Region = Str(r, "region") is "eu" or "na-east" or "sa" ? Str(r, "region") : "", RegionRank = Math.Max(0, Long(r, "region_rank")),
                         Total = Math.Max(0, Long(r, "total")),
                     };
                     long div = Long(r, "tier_division");

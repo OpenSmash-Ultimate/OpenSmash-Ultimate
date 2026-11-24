@@ -576,7 +576,7 @@ def fighter_icon(v):
 
 
 # ---- SSBU Arena's ranked board (OpenSmash.Core/RankedBoard.cs): public.ranked_board, the publishable key alone ----------
-RANKED_REGIONS = ("eu", "na-east")
+RANKED_REGIONS = ("eu", "na-east", "sa")
 ARENA_LEADERBOARD = "https://www.ssbuarena.com/leaderboard"
 
 
