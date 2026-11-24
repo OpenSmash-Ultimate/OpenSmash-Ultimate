@@ -19,7 +19,13 @@ public sealed partial class MainWindow
         var spv=Regex.Match(source,@"#define SHADER_CACHE_SPV_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
         string want=spv.Success?"\nspirv g"+(int.Parse(version.Groups[1].Value)*100+int.Parse(spv.Groups[1].Value))+".":"\nspirv ";
         string renderer=Surface.GetSetting("renderer");
-        if(renderer!="direct3d11"&&File.Exists(p.PathIn("build","ssbu_glslang.dll")))return text.Contains(want);
+        // Auto may fall back from Vulkan to Direct3D 11 on Windows: its programs must be this DXBC revision's too (#567),
+        // so only an explicit Vulkan, or a system with no Direct3D, asks for the SPIR-V alone.
+        if(renderer!="direct3d11"&&File.Exists(p.PathIn("build","ssbu_glslang.dll")))
+        {
+            if(!text.Contains(want))return false;
+            if(renderer=="vulkan"||!OperatingSystem.IsWindows())return true;
+        }
         var dxbc=Regex.Match(source,@"#define SHADER_CACHE_DXBC_VERSION \(SHADER_CACHE_VERSION \* 100 \+ (\d+)\)");
         return !dxbc.Success||Regex.IsMatch(text,@"(?m)^dxbc v"+(int.Parse(version.Groups[1].Value)*100+int.Parse(dxbc.Groups[1].Value))+@"\r?$");
     }
