@@ -244,42 +244,6 @@ static VkImage make_image(const VkImageCreateInfo *ici, Alloc *a) {
 #define MAX_POOLS 64
 typedef struct Grave { VkImage image; VkBuffer buffer; VkImageView view; Alloc alloc; VkBufferView bview; } Grave;
 typedef struct Block { VkBuffer buf; VkDeviceMemory mem; u8 *map; VkDeviceSize size, used; } Block;
-/* A small CPU-visible VRAM heap can fill long before the card's main heap (notably
- * without resizable BAR). Try every compatible coherent type once, then system RAM.
- * Map before binding: a failed map must not leave the buffer bound to freed memory. */
-static int upload_memory(Block *b, const VkMemoryRequirements *mr, int prefer_local, int *is_local, int *chosen_type) {
-    VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    *is_local = 0;
-    *chosen_type = -1;
-    b->mem = VK_NULL_HANDLE;
-    b->map = NULL;
-    for (int pass = 0; pass < 2; pass++) {
-        for (u32 type = 0; type < memory_props.memoryTypeCount; type++) {
-            VkMemoryPropertyFlags flags = memory_props.memoryTypes[type].propertyFlags;
-            int local = (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
-            if (!(mr->memoryTypeBits >> type & 1) || (flags & host) != host || local != (pass ? !prefer_local : !!prefer_local)) continue;
-            VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr->size, type};
-            VkDeviceMemory mem = VK_NULL_HANDLE;
-            u8 *map = NULL;
-            if (vkAllocateMemory(device, &mai, NULL, &mem) != VK_SUCCESS) continue;
-            if (vkMapMemory(device, mem, 0, VK_WHOLE_SIZE, 0, (void **)&map) != VK_SUCCESS) {
-                vkFreeMemory(device, mem, NULL);
-                continue;
-            }
-            if (vkBindBufferMemory(device, b->buf, mem, 0) != VK_SUCCESS) {
-                vkUnmapMemory(device, mem);
-                vkFreeMemory(device, mem, NULL);
-                return 0;
-            }
-            b->mem = mem;
-            b->map = map;
-            *is_local = local;
-            *chosen_type = (int)type;
-            return 1;
-        }
-    }
-    return 0;
-}
 typedef struct Frame {
     VkCommandBuffer cmd;
     VkFence done;
@@ -537,28 +501,38 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
     static int sysmem = -1;
     const char *sysmem_env = getenv("SSBU_VK_SYSMEM");
     if (sysmem < 0) sysmem = sysmem_env && *sysmem_env ? atoi(sysmem_env) != 0 : limits_vendor == 0x1002;
-    int local, type;
-    if (!upload_memory(b, &mr, !sysmem, &local, &type)) {
-        vkDestroyBuffer(device, b->buf, NULL);
-        b->buf = VK_NULL_HANDLE;
-        return NULL;
-    }
+    VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    int local = sysmem ? -1 : memory_type(mr.memoryTypeBits, host | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    /* (system memory: a type that is not the card's, though a card's host-visible type may be listed first) */
+    int type = memory_type_but(mr.memoryTypeBits, host, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (type < 0) type = memory_type(mr.memoryTypeBits, host);   /* (one memory for both: integrated graphics) */
     static int told;
     if (!told++) {
-        VkDeviceSize heap = type >= 0 ? memory_props.memoryHeaps[memory_props.memoryTypes[type].heapIndex].size : 0;
-        if (local)
+        int t = local >= 0 ? local : type;
+        VkDeviceSize heap = t >= 0 ? memory_props.memoryHeaps[memory_props.memoryTypes[t].heapIndex].size : 0;
+        if (local >= 0)
             fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): the card's CPU-visible memory "
                             "(type %d, heap of %llu MB; SSBU_VK_SYSMEM=1 for the system's if stages or backgrounds draw black)\n",
-                    type, (unsigned long long)(heap >> 20));
+                    t, (unsigned long long)(heap >> 20));
         else
             fprintf(stderr, "[vulkan] upload memory (vertex streams, constant buffers, textures on their way): %s (type %d, heap of %llu MB)%s\n",
-                    type >= 0 && (memory_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "the card's (no other here)" : "the system's",
-                    type, (unsigned long long)(heap >> 20),
+                    t >= 0 && (memory_props.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "the card's (no other here)" : "the system's",
+                    t, (unsigned long long)(heap >> 20),
                     !sysmem ? "" : sysmem_env && *sysmem_env ? ": SSBU_VK_SYSMEM=1"
                                  : ": AMD card, where draws read the stages' vertex data in the card's CPU-visible memory as nothing "
                                    "(black stages and backgrounds, #353); SSBU_VK_SYSMEM=0 puts it there");
     }
-    if (local) vk_stat_local_blocks++;
+    VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)local};
+    if (local < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) {
+        mai.memoryTypeIndex = (uint32_t)type;
+        if (type < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) { vkDestroyBuffer(device, b->buf, NULL); return NULL; }
+    } else vk_stat_local_blocks++;
+    vkBindBufferMemory(device, b->buf, b->mem, 0);
+    if (vkMapMemory(device, b->mem, 0, VK_WHOLE_SIZE, 0, (void **)&b->map) != VK_SUCCESS) {
+        vkDestroyBuffer(device, b->buf, NULL);
+        vkFreeMemory(device, b->mem, NULL);
+        return NULL;
+    }
     b->size = bs;
     b->used = size;
     f->nblocks++;
@@ -1421,25 +1395,6 @@ static VkDescriptorSetLayout gfx_set_layout, cs_set_layout;
 static VkPipelineLayout gfx_layout, cs_layout;
 static VkPipelineCache pipeline_cache;
 static char pipeline_cache_path[1024];
-/* A driver crash was observed while exporting the cache alongside pipeline creation. Keep
- * compilation parallel, but take an exclusive snapshot for export (a compatibility defense,
- * not a requirement to serialize Vulkan's internally synchronized pipeline creation). */
-static SRWLOCK pipeline_cache_lock = SRWLOCK_INIT;
-static volatile LONG64 pipeline_cache_generation;
-static VkResult cached_compute_pipeline(const VkComputePipelineCreateInfo *info, VkPipeline *out) {
-    AcquireSRWLockShared(&pipeline_cache_lock);
-    VkResult r = vkCreateComputePipelines(device, pipeline_cache, 1, info, NULL, out);
-    if (r == VK_SUCCESS) InterlockedIncrement64(&pipeline_cache_generation);
-    ReleaseSRWLockShared(&pipeline_cache_lock);
-    return r;
-}
-static VkResult cached_graphics_pipeline(const VkGraphicsPipelineCreateInfo *info, VkPipeline *out) {
-    AcquireSRWLockShared(&pipeline_cache_lock);
-    VkResult r = vkCreateGraphicsPipelines(device, pipeline_cache, 1, info, NULL, out);
-    if (r == VK_SUCCESS) InterlockedIncrement64(&pipeline_cache_generation);
-    ReleaseSRWLockShared(&pipeline_cache_lock);
-    return r;
-}
 static VkBuffer dummy_buffer;
 static VkBufferView dummy_texels;
 static Alloc dummy_buffer_mem;
@@ -2342,7 +2297,7 @@ static void shader_make(VShader *s, const char *hlsl) {
         VkComputePipelineCreateInfo cpi = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
                                            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", NULL},
                                            cs_layout, VK_NULL_HANDLE, -1};
-        made = cached_compute_pipeline(&cpi, &s->compute) == VK_SUCCESS;
+        made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &s->compute) == VK_SUCCESS;
         if (!made) fprintf(stderr, "[vulkan] %s: cannot make its pipeline\n", s->name);
     }
     InterlockedExchange(&s->state, made ? 1 : 2);   /* (the module written before: a full barrier) */
@@ -3234,7 +3189,7 @@ static void pipe_make(Pipe *e) {
                                         &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
     VkPipeline p;
     u64 t0 = rt_clock_ns();
-    VkResult r = cached_graphics_pipeline(&pci, &p);
+    VkResult r = vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p);
     InterlockedAdd64(&pipeline_ns, (LONG64)(rt_clock_ns() - t0));
     if (r != VK_SUCCESS) {
         static volatile LONG told;
@@ -3423,19 +3378,6 @@ static int warm_record_ok(const WarmRecord *r) {
     return r->kind == 1 && r->vs.stage == SHADER_VERTEX && (r->ps.stage == SHADER_PIXEL || r->ps.stage == ~0u) && r->key.ncolor <= 8;
 }
 
-/* The shipped list contains host formats from the card that recorded it. Match the depth
- * format this card's draws will use before hashing/deduplicating records: on cards without
- * D24S8 (and in the no-D24 diagnostic), Z24S8 surfaces use D32S8. Explicit D32S8 records stay
- * D32S8. Only the per-card list is rewritten; the shipped list remains portable. */
-static int warm_record_native(WarmRecord *r) {
-    if (r->kind != 1 || r->key.depth != VK_FORMAT_D24_UNORM_S8_UINT) return 0;
-    VkFormat depth = depth_format(0x14);
-    if (r->key.depth == depth) return 0;
-    r->key.depth = depth;
-    r->sum = desc_hash(&r->vs, sizeof *r - offsetof(WarmRecord, vs));
-    return 1;
-}
-
 static void warm_shader_put(const WarmKey *k) {
     for (u32 h = desc_hash(k, sizeof *k) & (warm_shader_slots - 1);; h = (h + 1) & (warm_shader_slots - 1)) {
         WarmShader *w = &warm_shaders[h];
@@ -3507,7 +3449,7 @@ static void warm_list_open(void) {
     plain.spv_version = SHADER_CACHE_SPV_VERSION;
     if (ship && (ship_size < sizeof head || (memcmp(ship, &head, sizeof head) && memcmp(ship, &plain, sizeof head)))) { free(ship); ship = NULL; }
     if (ship) memcpy(ship, &head, sizeof head);
-    int joined = 0;
+    int joined = 0, fresh = 0;
     if (ship) {
         if (data && size >= sizeof head && !memcmp(data, &head, sizeof head)) {
             size_t extra = (ship_size - sizeof head) / sizeof(WarmRecord) * sizeof(WarmRecord);
@@ -3527,16 +3469,9 @@ static void warm_list_open(void) {
             data = ship;
             size = ship_size;
             joined = 1;
+            fresh = 1;   /* (no list of this card's yet, or not one of this translator: written below, header first) */
             fprintf(stderr, "[vulkan] warm start: the shipped list of pipelines, %u records (none for this card yet)\n", (u32)((size - sizeof head) / sizeof(WarmRecord)));
         }
-    }
-    if (data && size >= sizeof head && !memcmp(data, &head, sizeof head)) {
-        /* Adapt valid D24 records to this card's depth format before deduplicating; validate first
-         * so an invalid record cannot pass after recomputing its checksum. */
-        u32 listed = (u32)((size - sizeof head) / sizeof(WarmRecord));
-        WarmRecord *rec = (WarmRecord *)(void *)(data + sizeof head);
-        for (u32 i = 0; i < listed; i++)
-            if (warm_record_ok(&rec[i])) recovered_header |= warm_record_native(&rec[i]);
     }
     int rewrite = !data || joined || recovered_header;
     u32 n = 0;
@@ -4135,7 +4070,7 @@ static void warm_load(WarmShader *w) {
             VkComputePipelineCreateInfo cpi = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
                                                {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", NULL},
                                                cs_layout, VK_NULL_HANDLE, -1};
-            made = cached_compute_pipeline(&cpi, &w->compute) == VK_SUCCESS;
+            made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &w->compute) == VK_SUCCESS;
             if (!made) { vkDestroyShaderModule(device, module, NULL); w->compute = VK_NULL_HANDLE; }
         }
         if (made) w->module = module;
@@ -4393,7 +4328,7 @@ static void warm_wake(void) {
  * wait; N: N seconds at most (as Direct3D 11's). */
 void watchdog_pause(int on);   /* debug_watchdog.c */
 static int warm_group_left(const WarmGroup *g) { return g->done < (LONG)g->n; }
-static int pipeline_cache_save(int closing);
+static void pipeline_cache_save(void);
 /* SSBU_VK_WARM_ONLY=1 (tools/shader_aot.py, after Prepare Shaders has every SPIR-V file; with SSBU_HEADLESS=1): this
  * start only fills the graphics driver's own pipeline cache, then ends. The driver keeps its compiled pipelines by the
  * program's path (gpu_nvcache.c), so a new install's first starts compiled them while the player waited: 18 s before the
@@ -4423,7 +4358,7 @@ static void vk_warm_only_run(void) {
         }
         Sleep(100);
     }
-    if (!stopped) pipeline_cache_save(1);
+    if (!stopped) pipeline_cache_save();
     fprintf(stderr, "[vulkan] warm only: %lld pipelines made and %lld programs loaded of %u listed in %.1f s (%lld the driver could not make)%s\n",
             (long long)vk_stat_warm_pipelines, (long long)vk_stat_warm_loaded, warm_nrecords, (GetTickCount64() - t0) / 1000.0,
             (long long)vk_stat_pipeline_failures, stopped ? "; stopped: the game was started" : "");
@@ -5757,7 +5692,7 @@ static VkPipeline clear_pipeline(VkFormat format, u32 mask) {
     VkGraphicsPipelineCreateInfo pci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri, 0, 2, st, &vi, &ia, NULL, &vp, &rs, &ms,
                                         &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
     VkPipeline p;
-    if (cached_graphics_pipeline(&pci, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p) != VK_SUCCESS) return VK_NULL_HANDLE;
     clear_pipes[nclear_pipes].format = format;
     clear_pipes[nclear_pipes].mask = mask;
     clear_pipes[nclear_pipes++].pipe = p;
@@ -5866,7 +5801,7 @@ static VkPipeline small_pipeline(VkShaderModule vs, VkShaderModule ps, VkFormat 
     VkGraphicsPipelineCreateInfo pci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri, 0, 2, st, &vi, &ia, NULL, &vp, &rs, &ms,
                                         &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
     VkPipeline p;
-    return cached_graphics_pipeline(&pci, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
+    return vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
 }
 
 /* The programs, pipelines and glyph atlas, once (recorded into the frame's commands: the atlas upload). */
@@ -6179,74 +6114,46 @@ static void *vk_display_output(void) {
     return found;
 }
 
-/* Only one export/file replacement at a time, including a close while a save is queued or
- * running. Closing saves directly: it must not wait for a queued job or a missing worker. */
-static SRWLOCK pipeline_cache_io_lock = SRWLOCK_INIT;
-static volatile LONG64 pipeline_cache_saved, pipeline_cache_next = 60000000000ll;
-static volatile LONG pipeline_cache_saving;
+/* The pipeline cache to its file (written aside, then put in place): by a maker at most once a minute while
+ * new pipelines are made, never during a fight (the driver's export of a 100 MB cache competes with the
+ * fight's own pipeline making), and at the end. */
 int game_fight_on(void);   /* (hle_fight_test.c) */
-static int pipeline_cache_save(int closing) {
+static void pipeline_cache_save(void) {
     u64 t0 = rt_clock_ns();
-    if (closing) AcquireSRWLockExclusive(&pipeline_cache_io_lock);
-    else if (!TryAcquireSRWLockExclusive(&pipeline_cache_io_lock)) return 0;
-    if (closing) AcquireSRWLockExclusive(&pipeline_cache_lock);
-    else if (!TryAcquireSRWLockExclusive(&pipeline_cache_lock)) {
-        ReleaseSRWLockExclusive(&pipeline_cache_io_lock);
-        return 0;   /* busy compiling: retry later, without delaying another compiler */
-    }
     size_t size = 0;
-    void *data = NULL;
-    u64 made = 0;
-    int ok = 0;
-    /* Check again when the worker runs: a menu can have become a fight since enqueueing. */
-    if ((closing || !game_fight_on()) && pipeline_cache &&
-        vkGetPipelineCacheData(device, pipeline_cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) != NULL) {
-        ok = vkGetPipelineCacheData(device, pipeline_cache, &size, data) == VK_SUCCESS && size;
-        made = (u64)InterlockedCompareExchange64(&pipeline_cache_generation, 0, 0);
-    }
-    ReleaseSRWLockExclusive(&pipeline_cache_lock);   /* compilation resumes before any disk I/O */
-    if (ok) {
-        ok = 0;
+    if (!pipeline_cache || vkGetPipelineCacheData(device, pipeline_cache, &size, NULL) != VK_SUCCESS || !size) return;
+    void *data = malloc(size);
+    if (!data) return;
+    if (vkGetPipelineCacheData(device, pipeline_cache, &size, data) == VK_SUCCESS) {
         char tmp[1100];
         snprintf(tmp, sizeof tmp, "%s.%lu.tmp", pipeline_cache_path, GetCurrentProcessId());
         FILE *f = fopen(tmp, "wb");
         if (f) {
-            int wrote = fwrite(data, 1, size, f) == size;
-            int closed = fclose(f) == 0;
-            ok = wrote && closed && MoveFileExA(tmp, pipeline_cache_path, MOVEFILE_REPLACE_EXISTING);
-            if (!ok) DeleteFileA(tmp);
+            int ok = fwrite(data, 1, size, f) == size;
+            if (fclose(f) || !ok || !MoveFileExA(tmp, pipeline_cache_path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
         }
     }
     free(data);
-    if (ok) {
-        InterlockedExchange64(&pipeline_cache_saved, (LONG64)made);
-        fprintf(stderr, "[vulkan] pipeline cache saved: %.1f MB in %.0f ms (at %.1f s)\n", size / 1048576.0, (rt_clock_ns() - t0) / 1e6, rt_now_ns() / 1e9);
-    }
-    ReleaseSRWLockExclusive(&pipeline_cache_io_lock);
-    return ok;
+    fprintf(stderr, "[vulkan] pipeline cache saved: %.1f MB in %.0f ms (at %.1f s)\n", size / 1048576.0, (rt_clock_ns() - t0) / 1e6, rt_now_ns() / 1e9);
 }
-static void save_job(Job *j) {
-    (void)j;
-    int ok = pipeline_cache_save(0);
-    InterlockedExchange64(&pipeline_cache_next, (LONG64)(rt_now_ns() + (ok ? 60000000000ull : 5000000000ull)));
-    InterlockedExchange(&pipeline_cache_saving, 0);
-}
+static volatile LONG saving;
+static void save_job(Job *j) { (void)j; pipeline_cache_save(); InterlockedExchange(&saving, 0); }
 static void pipeline_cache_tick(void) {
+    static u64 saved, last;
     static Job job = {NULL, save_job};
-    if (game_fight_on() || InterlockedCompareExchange(&pipeline_cache_saving, 1, 0)) return;
-    u64 made = (u64)InterlockedCompareExchange64(&pipeline_cache_generation, 0, 0), now = rt_now_ns();
-    if (made == (u64)InterlockedCompareExchange64(&pipeline_cache_saved, 0, 0) ||
-        now < (u64)InterlockedCompareExchange64(&pipeline_cache_next, 0, 0)) {
-        InterlockedExchange(&pipeline_cache_saving, 0);
-        return;
-    }
+    u64 made = vk_stat_pipelines + (u64)vk_stat_warm_pipelines, now = rt_now_ns();   /* (the warm threads' too: a lost cache file made again) */
+    if (made == saved || now - last < 60000000000ull || saving) return;   /* (a minute apart: the file is 100 MB and more) */
+    if (game_fight_on() || !nmakers) return;   /* (after the fight; with no maker thread the job would run here, on the renderer) */
+    saved = made;
+    last = now;
+    InterlockedExchange(&saving, 1);
     job_add(&job);
 }
 
 static void vk_closing(void) {
     /* (Closed while it warms: the threads make no more, and the marker goes - a close is not a warm start that died.) */
     if (warm_running) { InterlockedExchange(&warm_stopped, 1); DeleteFileA(warm_marker); }
-    pipeline_cache_save(1);
+    if (!saving) pipeline_cache_save();
 }
 
 static const GfxBackend VULKAN = {

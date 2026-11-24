@@ -375,14 +375,7 @@ static void engine_method(Channel *ch, Engine *e, u32 method, u32 arg) {
             else if (op == 2) release(va, 0, !one_word);   /* counters read as zero until rendering exists */
             break;
         }
-        case 0x0B2: {   /* NVB197_INCREMENT_SYNC_POINT (0x02c8 / 4) */
-            /* NVIDIA clb197.h: index 11:0; bit 16 cleans L2, bit 20 selects
-             * stream-out/ROP completion. Both conditions increment, with or
-             * without a cache clean. Earlier draws have reached the backend. */
-            u32 id = arg & 0xFFF;
-            syncpoint_increment(id);
-            break;
-        }
+        case 0x0B2: if (arg & (1u << 16)) syncpoint_increment(arg & 0xFFFF); break;   /* SYNCPOINT_ACTION */
         case 0x06C: e->i2m_pos = 0; break;                                            /* I2M launch */
         case 0x06D: i2m_load(e, 0x60, arg); break;                                    /* I2M data */
         case M_CB_BIND(0): case M_CB_BIND(1): case M_CB_BIND(2): case M_CB_BIND(3): case M_CB_BIND(4): {
