@@ -141,6 +141,8 @@ namespace OpenSmash.Core
         /// <summary>The question is a JOIN of netplay version 2 with no lobby ticket ("SN", version, type 1, a nonce,
         /// the lobby code, the name "ping", no build): an official lobby lets nobody in without one and says so at once
         /// (REJECT, type 3), which is all that is timed. A lobby that does let it in (WELCOME, 2) is left (LEAVE, 8).</summary>
+        static readonly object SocketMade = new object();
+
         public static int[] Ask(ServerRegion region, int samples)
         {
             var got = new List<int>();
@@ -149,7 +151,9 @@ namespace OpenSmash.Core
                 var address = Dns.GetHostAddresses(region.Host).FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
                 if (address == null) return got.ToArray();
                 var at = new IPEndPoint(address, region.Port);
-                using var udp = new UdpClient(AddressFamily.InterNetwork);
+                UdpClient made;
+                lock (SocketMade) made = new UdpClient(AddressFamily.InterNetwork);   // (#542: .NET 8 on macOS can crash when two threads make a socket at once)
+                using var udp = made;
                 byte[] join = new byte[4 + 8 + 32 + 32 + 40];
                 join[0] = (byte)'S'; join[1] = (byte)'N'; join[2] = 2; join[3] = 1;
                 byte[] nonce = Guid.NewGuid().ToByteArray().Take(8).ToArray();
