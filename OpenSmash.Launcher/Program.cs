@@ -213,6 +213,7 @@ namespace OpenSmash.Launcher
                 RedirectStandardError = true,
             };
             foreach (string v in ClearedVars) psi.EnvironmentVariables.Remove(v);
+            psi.EnvironmentVariables[OpenSmash.Core.VersionInfo.EnvName] = OpenSmash.Core.VersionInfo.Launcher;   // (the game's Esc menu shows it)
             if (onlinePassFile != null) psi.EnvironmentVariables["SSBU_ONLINE_TICKET_FILE"] = onlinePassFile;   // (v0.5.0: the account's lobby ticket)
             var logLock = new object();
             var proc = Process.Start(psi);

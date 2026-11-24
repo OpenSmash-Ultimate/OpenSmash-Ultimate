@@ -413,6 +413,8 @@ public sealed partial class ClassicSurface
             string message = string.IsNullOrEmpty(_updateMessage) ? "Check GitHub for a newer version of OpenSmash. Play is paused while an update installs." : _updateMessage;
             ArtworkTheme.DrawWrapped(g, message, FB(15 * s), A(ArtworkTheme.Muted), x + pad, ty, cwIn - pad * 2, 64 * s);
             if (!string.IsNullOrEmpty(_updateDetail)) ArtworkTheme.DrawWrapped(g, _updateDetail, FB(13 * s), A(ArtworkTheme.Dim), x + pad, ty + 70 * s, cwIn - pad * 2, 54 * s);
+            // (the three versions a report asks for: OpenSmash.Core.VersionInfo; the game's Esc menu shows them too)
+            if (Project != null) ArtworkTheme.Label(g, OpenSmash.Core.VersionInfo.Line(Project.Root), FM(12 * s), A(ArtworkTheme.Dim), x + pad, listTop + ch - 110 * s, 16 * s, 12 * s * 0.08f);
             if (_updateLocal.Length > 0 || _updateHead.Length > 0)
             {
                 Font vf = FM(12 * s);

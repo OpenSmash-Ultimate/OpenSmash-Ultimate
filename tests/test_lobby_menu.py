@@ -414,7 +414,7 @@ class Pages(MenuTest):
         m.type('4')
         keys = (['F1, Cmd+1', 'F2, Cmd+2', 'F3, Cmd+3', 'Option+Return'] if sys.platform == 'darwin'
                 else ['F1', 'F2', 'F3', 'F11, Alt+Enter'])
-        self.assertEqual(m.labels(), ['Interface language', 'Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Version'])
+        self.assertEqual(m.labels(), ['Interface language', 'Game language', 'Volume', 'Restart the game', 'Quit the game', 'Esc / Home button', *keys, 'Game version', 'OpenSmash (recomp)', 'Launcher'])
 
     @unittest.skipIf(sys.platform == 'darwin', 'the Mac program has no Renderer row (Metal only)')
     def test_renderer_row(self):

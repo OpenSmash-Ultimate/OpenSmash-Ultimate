@@ -15,7 +15,7 @@ static class ReferenceImages
         using var expected=SKBitmap.Decode(Path.Combine(AppContext.BaseDirectory,"References",reference+".png"));
         using var actual=SKBitmap.Decode(png);
         if(expected.Width!=actual.Width||expected.Height!=actual.Height||expected.ColorType!=actual.ColorType)throw new Exception(name+": reference image format changed.");
-        var a=expected.GetPixelSpan();var b=actual.GetPixelSpan();int differences=0;
+        var a=expected.GetPixelSpan();var b=actual.GetPixelSpan();int differences=0,x0=int.MaxValue,y0=int.MaxValue,x1=-1,y1=-1;
         for(int y=0;y<expected.Height;y++)for(int x=0;x<expected.Width;x++)
         {
             // Elapsed build-clock text is intentionally live; animation time is frozen.
@@ -24,6 +24,8 @@ static class ReferenceImages
             if(reference.StartsWith("settings")&&x>=828&&x<1024&&y>=202&&y<246)continue;
             // Update adds BUILD GAME + LAUNCHER at the left of the button row, moving CHECK FOR UPDATE beside it.
             if(reference=="settings-update"&&x>=136&&x<660&&y>=650&&y<712)continue;
+            // The versions line (LAUNCHER / RECOMP / GAME: OpenSmash.Core.VersionInfo) above it, in the card's empty space.
+            if(reference=="settings-update"&&x>=136&&x<900&&y>=600&&y<650)continue;
             // Windows appends the Advanced tab (rooms: RoomsArtwork.cs) after them.
             if(reference.StartsWith("settings")&&x>=1024&&x<1340&&y>=202&&y<246)continue;
             // Display now appends Preload shaders below the original three rows.
@@ -48,9 +50,9 @@ static class ReferenceImages
             if(reference=="plugins"&&x>=100&&x<1340&&y>=196&&y<266)continue;
             // Upstream's Remap a controller row comes after controllers.ini.
             if(reference=="settings-controllers"&&x>=100&&x<1340&&y>=553)continue;
-            if(!a.Slice(y*expected.RowBytes+x*4,4).SequenceEqual(b.Slice(y*actual.RowBytes+x*4,4)))differences++;
+            if(!a.Slice(y*expected.RowBytes+x*4,4).SequenceEqual(b.Slice(y*actual.RowBytes+x*4,4))){differences++;x0=Math.Min(x0,x);y0=Math.Min(y0,y);x1=Math.Max(x1,x);y1=Math.Max(y1,y);}
         }
-        if(differences!=0)throw new Exception($"{name}: {differences} pixels differ from the original Windows launcher.");
+        if(differences!=0)throw new Exception($"{name}: {differences} pixels differ from the original Windows launcher (x {x0}-{x1}, y {y0}-{y1}).");
         Console.WriteLine("PASS original reference: "+name+" (zero differing pixels)");
     }
 }

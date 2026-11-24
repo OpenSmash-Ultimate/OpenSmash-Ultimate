@@ -17,6 +17,7 @@ public sealed record Command(string Executable, IReadOnlyList<string> Arguments,
         foreach (string argument in Arguments) info.ArgumentList.Add(argument);
         info.Environment["PYTHONIOENCODING"] = "utf-8";
         info.Environment["PYTHONUNBUFFERED"] = "1";
+        info.Environment[OpenSmash.Core.VersionInfo.EnvName] = OpenSmash.Core.VersionInfo.Launcher;   // (the game's Esc menu shows it)
         if (Environment != null) foreach (var entry in Environment) info.Environment[entry.Key] = entry.Value;
         return info;
     }

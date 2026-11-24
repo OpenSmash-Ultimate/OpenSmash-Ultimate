@@ -238,7 +238,7 @@ static int trigger_default(const PadInfo *p) { return pad_is_gc(p) ? GC_TRIGGER_
 static char pins[PAD_SLOTS][128]; /* controllers.ini's [players], read at the menu's opening and changes */
 static int rumble_slot = -1;
 static ULONGLONG rumble_stop;
-static char version[64];
+static char version[64], source_version[64], launcher_version[64];   /* (the Info page: the game's, the recomp sources', the launcher's) */
 static char gpus[8][64];
 static int ngpus;
 static int wheel_free_sel = -1, wheel_free_page = -1; /* the wheel moved the view off the cursor: the row it left, so drawing does not pull the view back */
@@ -305,18 +305,56 @@ static void net_save_server(void)
     settings_line_write(config_path(CONFIG_ONLINE_SERVER), line);
 }
 
-static void load_version(void)
+/* the first line of <the port's folder>/<rel>, or "" */
+static void first_line(const char *rel, char *out, size_t size)
 {
     char path[600];
-    snprintf(path, sizeof path, "%s/../../version.txt", rt_data_dir ? rt_data_dir : ".");
-    version[0] = 0;
+    snprintf(path, sizeof path, "%s/../../%s", rt_data_dir ? rt_data_dir : ".", rel);
+    out[0] = 0;
     FILE *f = fopen(path, "r");
     if (f)
     {
-        if (fgets(version, sizeof version, f))
-            version[strcspn(version, "\r\n")] = 0;
+        if (fgets(out, (int)size, f))
+            out[strcspn(out, "\r\n")] = 0;
         fclose(f);
     }
+}
+
+static int hex40(const char *t)
+{
+    int n = 0;
+    while (n < 40 && ((t[n] >= '0' && t[n] <= '9') || (t[n] >= 'a' && t[n] <= 'f') || (t[n] >= 'A' && t[n] <= 'F'))) n++;
+    return n == 40;
+}
+
+static void load_version(void)
+{
+    first_line("version.txt", version, sizeof version);
+    /* the recomp's sources: tools/source_version.txt "<commit> <date>" (a release ZIP and the updater write it); in a git
+     * checkout (still "$Format..."), .git/HEAD's commit, or its branch's */
+    char line[128];
+    first_line("tools/source_version.txt", line, sizeof line);
+    source_version[0] = 0;
+    if (hex40(line))
+        snprintf(source_version, sizeof source_version, "%.7s%s", line, line[40] == ' ' ? line + 40 : "");
+    else
+    {
+        first_line(".git/HEAD", line, sizeof line);
+        if (hex40(line))
+            snprintf(source_version, sizeof source_version, "%.7s (git)", line);
+        else if (!strncmp(line, "ref: refs/heads/", 16))
+        {
+            char ref[160], sha[64];
+            snprintf(ref, sizeof ref, ".git/%s", line + 5);
+            first_line(ref, sha, sizeof sha);
+            if (hex40(sha))
+                snprintf(source_version, sizeof source_version, "%.7s (git, %.40s)", sha, line + 16);
+            else
+                snprintf(source_version, sizeof source_version, "git, %.40s", line + 16);
+        }
+    }
+    const char *lv = getenv("OPENSMASH_LAUNCHER_VERSION");   /* (the launchers set it at Play: OpenSmash.Core.VersionInfo.EnvName) */
+    snprintf(launcher_version, sizeof launcher_version, "%s", lv && *lv ? lv : "");
 }
 
 static void load_pins(void);
@@ -1416,8 +1454,12 @@ static void build(void)
             r = add(R_NONE, K_INFO, W_NONE, KEYS[i][0], "Keys that work while playing.");
             snprintf(r->value, sizeof r->value, "%s", KEYS[i][1]);
         }
-        r = add(R_NONE, K_INFO, W_NONE, "Version", "The game version this folder has (version.txt).");
+        r = add(R_NONE, K_INFO, W_NONE, "Game version", "The game version this folder has (version.txt).");
         snprintf(r->value, sizeof r->value, "%s", version[0] ? version : "unknown (no version.txt)");
+        r = add(R_NONE, K_INFO, W_NONE, "OpenSmash (recomp)", "The OpenSmash commit this folder's sources are at, and its date (tools/source_version.txt).");
+        snprintf(r->value, sizeof r->value, "%s", source_version[0] ? source_version : "unknown");
+        r = add(R_NONE, K_INFO, W_NONE, "Launcher", "The version of the OpenSmash launcher that started the game.");
+        snprintf(r->value, sizeof r->value, "%s", launcher_version[0] ? launcher_version : "not started from the launcher");
         break;
     }
     static Row packed[MENU_ROWS];
