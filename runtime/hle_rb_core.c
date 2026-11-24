@@ -5503,6 +5503,8 @@ void ra_pad_read(u32 id, u64 buttons) {
     fprintf(ra_tf, "P %lld %u %llx\n", ra_seg_host, ld32(LOGIC_FRAME), (unsigned long long)buttons);
 }
 
+static long long ra_jobs_waits, ra_jobs_late;
+static double ra_jobs_wait_ms, ra_jobs_wait_max;   /* (run-ahead's saves and the task workers' jobs: below) */
 static void ra_report(const char *why);
 /* the next segment hidden or shown */
 static void ra_next(Cpu *c, u32 key, int hide) {
@@ -5572,6 +5574,10 @@ static void ra_report(const char *why) {
             "%lld paused frames, %lld saves and %lld loads refused (%lld saves waited for a job, %lld of them in vain), %lld fights ended ahead\n",
             ra.n, why, ra.cycles, ra_ms[0] / n, ra_ms_max[0], ra_ms[1] / n, ra_ms_max[1], ra_ms[2] / n, ra_ms_max[2], ra_ms[3] / n, ra_ms_max[3],
             ra_gaps ? ra_ms[4] / (double)ra_gaps : 0, ra_ms_max[4], ra_gaps_late, ra.paused, ra.save_failed, ra.load_refused, rb_save_away_waits, rb_save_away_refused, ra_ended_ahead);
+    {   extern long long rb_save_gate_refused;
+        fprintf(stderr, "[rb] run-ahead: the saves waited for the task workers' jobs %lld times, %.2f ms on average (max %.1f), %lld still busy at the limit; %lld saves refused for them\n",
+                ra_jobs_waits, ra_jobs_waits ? ra_jobs_wait_ms / (double)ra_jobs_waits : 0.0, ra_jobs_wait_max, ra_jobs_late, rb_save_gate_refused);
+        ra_jobs_waits = ra_jobs_late = 0; ra_jobs_wait_ms = ra_jobs_wait_max = 0; }
     fprintf(stderr, "[rb] run-ahead: %lld of %lld loads came before the frame shown's picture was taken (never shown); %.2f ms waited for it per load\n",
             ra_unshown, ra_ms_n, ra_ms_n ? ra_show_wait_ms / (double)ra_ms_n : 0.0);
     ra_unshown = 0; ra_show_wait_ms = 0;
@@ -5610,10 +5616,12 @@ static int ra_pre;
 static long long ra_pre_frames, ra_pre_ok, ra_pre_skipped;
 /* (the ring test, SSBU_RB_RING, offline: the same copy at the set-up, so that its first save at <frame> is a fight
  * save as a match's is, not the whole 2 GB copy - 376-538 ms in its logs, a freeze no match has) */
+static int ra_jobs_on(void);   /* (below) */
 void ra_set_up(void) {
     if (net_mode < 0) return;
     if (ring_from >= 0 ? net_mode != 0 : (ra_blocked() || !ra_frames())) return;
     ra_pre = 1; ra_pre_frames = 0;
+    ra_jobs_on();   /* (its hooks placed in the loading screen, not at the first fight frame) */
     sm_pre_reset();
 }
 extern double rb_park_quick_ms;   /* (hle_rb_state.c) */
@@ -5633,6 +5641,75 @@ int ra_pre_point(Cpu *c, u64 frame) {
     if (ra_pre_frames == 1)
         fprintf(stderr, "[rb] run-ahead, before the fight: the whole copy at the set-up %s in %.0f ms\n", saved == 1 ? "taken" : "NOT taken (the threads didn't stop)", now_ms() - t0);
     return 1;
+}
+
+/* ---- (2026-11-24) run-ahead's save waits for the task workers' jobs ----------------------------------------------
+ * The safe point comes right after the main loop kicks the task workers (rb_job_kick): the render jobs of the frame
+ * just prepared are queued then (the queue: +0x68, 0x28 a batch, the count at +0x1468; a worker takes one with
+ * main+0x3816350 and runs it in main+0x3816730, each job's vtable +0x10, then destroys it). The jobs and their batches
+ * live in the graphics module's buffers, which the state map leaves out of the states (hle_rb_map.c, site
+ * 0x7103816ef4). Run-ahead saved at once (the net mode waits up to 4 ms for the threads there, run-ahead did not),
+ * so its state had the batch queued or in a worker's hands; the shown frame S then ran those jobs and destroyed them
+ * in memory no load puts back, and after the load the workers took the same batch again: a destroyed job's vtable,
+ * the game's pure-virtual handler, std::terminate, svcBreak (about every other run-ahead fight, 0.1 ms after a load).
+ * So the save waits (SSBU_RA_JOBS_MS, default 8) for no batch queued and none being run, and checks it again with
+ * every thread held (rb_save_gate); otherwise the save is refused and the frame is a normal one. SSBU_RA_JOBS=0: off. */
+#define RA_QUEUES 8
+static volatile u64 ra_queues[RA_QUEUES];
+static volatile LONG ra_jobs_running, ra_jobs_gen;
+static __declspec(thread) LONG ra_jobs_mine;   /* (this worker's batch: the generation it was taken in, 0: none) */
+static GuestFn *ra_take_orig, *ra_run_orig;
+static void ra_take_hook(Cpu *c) {   /* main+0x3816350(out, queue): out+0x20 = 1 when a batch was taken */
+    u64 out = c->x[0], q = c->x[1];
+    for (int i = 0; i < RA_QUEUES; i++) {
+        if (ra_queues[i] == q) break;
+        if (!ra_queues[i] && InterlockedCompareExchange64((volatile LONG64 *)&ra_queues[i], (LONG64)q, 0) == 0) break;
+        if (ra_queues[i] == q) break;
+    }
+    ra_take_orig(c);
+    if (ld32(out + 0x20) == 1 && !ra_jobs_mine) { ra_jobs_mine = ra_jobs_gen + 1; InterlockedIncrement(&ra_jobs_running); }
+}
+static void ra_run_hook(Cpu *c) {    /* main+0x3816730: one batch (or the wait for one) */
+    ra_run_orig(c);
+    if (ra_jobs_mine) { if (ra_jobs_mine == ra_jobs_gen + 1) InterlockedDecrement(&ra_jobs_running); ra_jobs_mine = 0; }
+}
+static int ra_jobs_idle(void) {
+    if (ra_jobs_running > 0) return 0;
+    for (int i = 0; i < RA_QUEUES && ra_queues[i]; i++) if (ld64(ra_queues[i] + 0x1468)) return 0;
+    return 1;
+}
+static int ra_jobs_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SSBU_RA_JOBS");
+        on = !(e && *e == '0');
+        if (on) {
+            u64 a = rt_hook_function(0x7103816350ull, rt_native(ra_take_hook, "run-ahead: a task worker takes a batch"));
+            if (a) ra_take_orig = rt_lookup(a);
+            u64 b = a ? rt_hook_function(0x7103816730ull, rt_native(ra_run_hook, "run-ahead: a task worker's batch")) : 0;
+            if (b) ra_run_orig = rt_lookup(b);
+            on = a && b;
+            fprintf(stderr, "[rb] run-ahead: the saves wait for the task workers' jobs%s\n", on ? "" : ": NOT HOOKED, saves as before");
+        } else fprintf(stderr, "[rb] run-ahead: SSBU_RA_JOBS=0: the saves do not wait for the task workers' jobs\n");
+    }
+    return on;
+}
+/* (a load came back to a save made with no batch queued or run: every worker is idle there; what ran since is forgotten) */
+static void ra_jobs_loaded(void) { InterlockedIncrement(&ra_jobs_gen); InterlockedExchange(&ra_jobs_running, 0); }
+
+/* (diagnostic, 2026-11-24) The game's pure-virtual handler (main+0x37f4780: 752 vtable slots, std::terminate): where it
+ * was called from and on what, said before the game stops. The task worker's job batch (main+0x3816730's x26..x27). */
+static GuestFn *pv_orig;
+static double ra_load_end_ms;
+static void pv_hook(Cpu *c) {
+    u64 o = c->x[0], b = c->x[26], e = c->x[27];
+    fprintf(stderr, "[rb] PURE VIRTUAL call from %#llx: object %#llx (vtable %#llx); x19 %#llx x20 %#llx x25 %#llx batch %#llx..%#llx; "
+            "run-ahead phase %d, %lld frames shown ahead, %.1f ms after the last load; task workers' batches running %ld\n", c->x[30], o, o ? ld64(o) : 0,
+            c->x[19], c->x[20], c->x[25], b, e, ra.phase, ra.cycles, ra_load_end_ms ? now_ms() - ra_load_end_ms : -1.0, (long)ra_jobs_running);
+    int rb_left_out(u64 g);
+    fprintf(stderr, "[rb]   object's page %s, batch's page %s of the states\n", rb_left_out(o & ~0xFFFull) ? "LEFT OUT" : "in", rb_left_out(b & ~0xFFFull) ? "LEFT OUT" : "in");
+    fflush(stderr);
+    pv_orig(c);
 }
 
 int runahead_point(Cpu *c, u64 frame) {
@@ -5659,6 +5736,7 @@ int runahead_point(Cpu *c, u64 frame) {
     }
     if (!ra_engaged) {
         ra_engaged = 1;
+        if (!pv_orig) { u64 o = rt_hook_function(0x71037f4780ull, rt_native(pv_hook, "pure virtual (diagnostic)")); if (o) pv_orig = rt_lookup(o); fprintf(stderr, "[rb] pure-virtual handler %s\n", o ? "watched" : "NOT watched"); }
         static int quiet;
         if (!quiet++) rb_quiet(1);   /* (a save and a load a frame: their lines only when slow) */
     }
@@ -5666,18 +5744,34 @@ int runahead_point(Cpu *c, u64 frame) {
     int hide = 0, act = ra_point(&ra, key, &hide);
     if (act == RA_SAVE) {
         ra_trace(c, 'R', key);
+        extern int (*rb_save_gate)(void);
+        int jobs = ra_jobs_on();
+        if (jobs && !ra_jobs_idle()) {   /* (R's render jobs: let the workers finish them first) */
+            static double limit = -1;
+            if (limit < 0) { const char *e = getenv("SSBU_RA_JOBS_MS"); limit = e && *e ? atof(e) : 8; }
+            double tw = now_ms(), w;
+            while (!ra_jobs_idle() && now_ms() - tw < limit) SwitchToThread();
+            w = now_ms() - tw;
+            ra_jobs_waits++; ra_jobs_wait_ms += w;
+            if (w > ra_jobs_wait_max) ra_jobs_wait_max = w;
+            if (!ra_jobs_idle()) ra_jobs_late++;
+        }
         ra_t_save0 = now_ms();
         rb_save_tag = key;
         extern int rb_save_home_only;
         rb_save_home_only = 1;
+        if (jobs) rb_save_gate = ra_jobs_idle;
         int r = rb_save(c, frame);
         rb_save_home_only = 0;
+        rb_save_gate = NULL;
         if (r == 2) {   /* a load came back here: the real game, at the logic frame after R's */
             logic_frame_loaded();
             double t = now_ms();
             ra_add(3, t - ra_t_load0);
             ra_ms_n++;
             ra_loaded(&ra, ld32(LOGIC_FRAME), &hide);
+            ra_jobs_loaded();
+            ra_load_end_ms = t;
             ra_t_start = t;
             ra_next(c, ld32(LOGIC_FRAME), hide);
             return 1;
