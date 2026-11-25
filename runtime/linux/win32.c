@@ -1370,23 +1370,30 @@ failed:
 
 /* rename() is atomic. Without MOVEFILE_REPLACE_EXISTING nothing at `to` is replaced, as on
  * Windows. With MOVEFILE_WRITE_THROUGH the file and the folder now holding its name are flushed
- * before it returns, so the move survives a power cut (the folder to the disk itself on macOS). */
+ * before it returns, so the move survives a power cut (the folder to the disk itself on macOS). A
+ * file system that cannot flush (EINVAL, ENOTSUP, ENOSYS: some network and FUSE ones, for folders)
+ * is not a failure: the move is made, without that promise. An I/O error is: FALSE, with the move
+ * made. */
+static int flushed(const char *path, int full) {   /* 0 with errno on a real failure */
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    int r = full ? full_fsync(fd) : fsync(fd), err = errno;
+    close(fd);
+    errno = err;
+    return !r || err == EINVAL || err == ENOTSUP || err == ENOSYS;
+}
 BOOL MoveFileExA(LPCSTR from, LPCSTR to, DWORD flags) {
     char a[4096], b[4096];
     rt_unix_path(from, a, sizeof a);
     rt_unix_path(to, b, sizeof b);
     if (flags & MOVEFILE_REPLACE_EXISTING ? rename(a, b) : rename_noreplace(a, b)) return fail_errno();
     if (!(flags & MOVEFILE_WRITE_THROUGH)) return TRUE;
-    int fd = open(b, O_RDONLY | O_CLOEXEC), ok = fd >= 0 && !fsync(fd);
-    if (fd >= 0) close(fd);
+    if (!flushed(b, 0)) return fail_errno();
     char *slash = strrchr(b, '/');
     if (slash == b) slash[1] = 0;
     else if (slash) *slash = 0;
     else snprintf(b, sizeof b, ".");
-    fd = open(b, O_RDONLY | O_CLOEXEC);
-    ok = ok && fd >= 0 && !full_fsync(fd);
-    if (fd >= 0) close(fd);
-    return ok ? TRUE : fail_errno();
+    return flushed(b, 1) ? TRUE : fail_errno();
 }
 
 DWORD GetFileAttributesA(LPCSTR path) {
