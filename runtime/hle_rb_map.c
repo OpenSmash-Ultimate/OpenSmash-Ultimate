@@ -123,9 +123,11 @@ static u64 orig_pm, orig_aa, orig_ra, orig_fr;
 static const Site rb_map_sites[] = {
     {0x7103816ef4ull, 0},                 /* the graphics module's 16 MB buffers (posix_memalign; 13.0.4 0x7103816944) */
     {0x710355a3b8ull, 0x71000a3fd8ull},   /* an 8 MB block (13.0.4 0x7103559e08 / 0x71000a3fd8) */
-    /* R4's third rt_big3 site (13.0.4 0x7103760cf8): from its two callers 14 blocks (31 MB) and one of 19 MB, ~90 hot pages a
-     * save, almost none changed. The only owner of the 2026-11-25 census (whole pages of one block) that ran clean
-     * alone: each other one hung or crashed at the first rollbacks (docs/TECHNICAL.md, "Left out by owner"). */
+    /* The allocation function of R4's third rt_big3 site (13.0.4 0x7103760cf8, there proven from the caller 0x7100081980
+     * only, 1.4 MB blocks). Here from two callers: 0x710007e574 (14 blocks, 31 MB, ~80 hot pages a save; in none of R4's
+     * lists: proven by the 2026-11-25 pairs alone) and 0x7100081980 (one 19 MB block, ~12). Almost none of their pages
+     * change. The only owner of the 2026-11-25 census (whole pages of one block) that ran clean alone: the others tried
+     * hung or crashed at the first rollbacks (docs/TECHNICAL.md, "Left out by owner"). */
     {0x71037612a8ull, 0x710007e574ull},
     {0x71037612a8ull, 0x7100081980ull},
 };
@@ -146,12 +148,27 @@ static int readable8(u64 a) {
     rd_lo = lo; rd_hi = hi;
     return 1;
 }
+extern __declspec(thread) int rt_probing;   /* (host.c: the crash handler leaves a fault to us) */
+static __declspec(noinline) u64 read8_at(u64 g) { return ld64(g); }
+static u64 read8_guarded(u64 g) {   /* (as gpu_d3d11.c's read_guarded) 0 where the read faults */
+    volatile u64 v = 0;
+    int was = rt_probing;
+    rt_probing = 1;
+    __try { v = read8_at(g); }   /* (a call of its own: a fault inside __try is only caught reliably in a callee) */
+    __except (EXCEPTION_EXECUTE_HANDLER) { v = 0; }
+    rt_probing = was;
+    return v;
+}
 static u32 site_now(Cpu *c) {
     u64 lr = c->x[30], fp = c->x[29], lr2 = 0;
-    /* (a frame record on a guest stack: the stack area, or a stack the game made in its heap - the job workers' and
-     * fibers' stacks are jemalloc blocks in the alias area: without it most sites had no caller's caller) */
-    if (!(fp & 7) && ((fp >= STACK_BASE && fp < KERNEL_BASE + 0x1000000) || (fp >= HEAP_BASE && fp < HEAP_BASE + HEAP_LIMIT) || (fp >= ALIAS_BASE && fp < ALIAS_BASE + ALIAS_SIZE)) && readable8(fp + 8))
+    /* (a frame record on a guest stack: the stack area, or a stack the game made in its heap) */
+    if (!(fp & 7) && ((fp >= STACK_BASE && fp < KERNEL_BASE + 0x1000000) || (fp >= HEAP_BASE && fp < HEAP_BASE + HEAP_LIMIT)) && readable8(fp + 8))
         lr2 = ld64(fp + 8);
+    /* (the job workers' and fibers' stacks are jemalloc blocks in the alias area - without them most sites had no
+     * caller's caller. There memory comes and goes under any thread (UnmapPhysicalMemory, a rollback's load), and x29
+     * is a record only by convention: just above the thread's own stack pointer, read guarded - a fault there is 0) */
+    else if (!(fp & 7) && fp >= ALIAS_BASE && fp < ALIAS_BASE + ALIAS_SIZE && fp >= c->sp && fp - c->sp < 0x10000)
+        lr2 = read8_guarded(fp + 8);
     u32 s = site_of(lr, lr2);
     if (s < SITE_MAX - 1 && site_out[s] == 0) site_out[s] = listed(lr, lr2) ? 2 : 1;   /* (1 kept, 2 left out) */
     return s;
@@ -282,6 +299,7 @@ static u64 set_sum(void) {   /* (out.lock held) the left-out set's fingerprint: 
     return h ^ (k << 48);
 }
 void *rb_map_save(const void *oldest) {
+    if (map_on > 0 && !nwant && census_on) { AcquireSRWLockExclusive(&out.lock); ++map_clock; ReleaseSRWLockExclusive(&out.lock); }   /* (the census's ages) */
     if (map_on <= 0 || !nwant) return NULL;
     AcquireSRWLockExclusive(&out.lock);
     long long stamp = ++map_clock, old = oldest ? ((const MapSave *)oldest)->stamp : stamp;
@@ -331,7 +349,7 @@ int rb_map_census_want(long long fight_save) {
         c_out = VirtualAlloc(NULL, ALIAS_SIZE >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (!c_hot || !c_steady || !c_wr || !c_gpu || !c_out) { census_on = 0; return 0; }
     }
-    if (!c_saves) c_clock0 = map_clock;
+    if (!c_saves) c_clock0 = map_clock + 1;   /* (this save's stamp: rb_map_save comes after the sync) */
     c_saves++;
     return 1;
 }

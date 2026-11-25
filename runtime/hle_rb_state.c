@@ -1552,8 +1552,9 @@ static void census_pages(void) {
                 unsigned long z;
                 _BitScanForward64(&z, bits);
                 u64 a = (wi << 6) + z, m = 1ull << z;
-                int st = sm_cmp > 0 || (sm_steady[wi] & m) != 0;   /* (SSBU_RB_SM_CMP, the default: every hot page compared) */
-                rb_map_census_page(a, st, st ? !sm_same[a] : (sm_wr[wi] & m) != 0, (gpu_word(wi) & m) != 0, (skip_word(wi) & m) != 0);
+                int sk = (skip_word(wi) & m) != 0;   /* (left out: never compared, its sm_same stale) */
+                int st = !sk && (sm_cmp > 0 || (sm_steady[wi] & m) != 0);   /* (SSBU_RB_SM_CMP, the default: every hot page compared) */
+                rb_map_census_page(a, st, !sk && (st ? !sm_same[a] : (sm_wr[wi] & m) != 0), (gpu_word(wi) & m) != 0, sk);
             }
         }
     }
