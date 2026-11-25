@@ -171,6 +171,10 @@ $TomlCheck = 'import sys, importlib.util as u; sys.exit(0 if sys.version_info >=
 $RepoOwner = 'OpenSmash-Ultimate'
 $RepoName = 'OpenSmash-Ultimate'
 $UpdateBranch = 'main'
+# OpenSmash.exe built from main (.github/workflows/launcher-main.yml), with OpenSmash.exe.sha256 beside it: the
+# launcher a copy that follows main takes when it cannot rebuild its own (no .NET SDK). Without it such a copy kept the
+# v0.4.1 launcher, which has no account sign-in, while main's game needs a lobby ticket online (#510).
+$MainLauncherTag = 'launcher-main'
 # Update channel (issue #329): by default a copy follows the newest versioned release (releases/latest); following main
 # commit by commit is opt-in, for testers: OPENSMASH_UPDATE_CHANNEL=main or the word main in tools\update_channel.txt.
 # With no release published yet, main is followed as before.
@@ -1791,8 +1795,10 @@ function Update-LauncherExe {
        source only, and only a PC with the .NET SDK rebuilds one. So, on a copy that follows the versioned releases,
        an OpenSmash.exe that is not the latest release's is swapped for it here, checked against the SHA-256 published
        beside it. A running exe can be renamed but not overwritten: the old one becomes OpenSmash.exe.old (deleted on
-       the next run) and the new one is used from the next start. $true when it was swapped; $Script:LauncherIsRelease
-       says whether OpenSmash.exe is the release's afterwards (swapped or already), for -LauncherOnly. #>
+       the next run) and the new one is used from the next start. A copy that follows main gets main's build the same
+       way ($MainLauncherTag), so it gets the launcher main's game needs (the account sign-in, #510) without the SDK.
+       $true when it was swapped; $Script:LauncherIsRelease says whether OpenSmash.exe is the published one afterwards
+       (swapped or already), for -LauncherOnly. #>
     $Script:LauncherIsRelease = $false
     $exe = Join-Path $Root 'OpenSmash.exe'
     $old = "$exe.old"
@@ -1810,20 +1816,22 @@ function Update-LauncherExe {
     if ($env:OPENSMASH_LAUNCHER_REBUILDS -eq '1') { return $false }
     $tag = Get-UpdateRef
     if (-not $tag) { Write-Warn "launcher: GitHub did not say which release is the latest ($($Script:UpdateRefProblem)); this one stays"; return $false }
-    if ($tag -eq $UpdateBranch) { return $false }   # following main, or no release yet: nothing published to compare with
+    # following main (or no release yet): main's own build, published as the prerelease $MainLauncherTag
+    $label = $tag
+    if ($tag -eq $UpdateBranch) { $tag = $MainLauncherTag; $label = $UpdateBranch }
     $base = "https://github.com/$RepoOwner/$RepoName/releases/download/$([uri]::EscapeDataString($tag))"
     $tmp = "$exe.download"
     try {
         $sum = Read-PublishedSha256 (Get-Text "$base/OpenSmash.exe.sha256")
         if (-not $sum) { Write-Warn "launcher: $tag publishes no OpenSmash.exe checksum; this one stays"; return $false }
-        if ((Get-Sha256 $exe) -eq $sum) { Write-Info "launcher: OpenSmash.exe is $($tag)'s"; $Script:LauncherIsRelease = $true; return $false }
-        if ($DryRun) { Write-Would "replace OpenSmash.exe with $($tag)'s"; return $false }
-        Invoke-Download "$base/OpenSmash.exe" $tmp "the OpenSmash launcher of $tag"
+        if ((Get-Sha256 $exe) -eq $sum) { Write-Info "launcher: OpenSmash.exe is $($label)'s"; $Script:LauncherIsRelease = $true; return $false }
+        if ($DryRun) { Write-Would "replace OpenSmash.exe with $($label)'s"; return $false }
+        Invoke-Download "$base/OpenSmash.exe" $tmp "the OpenSmash launcher of $label"
         if (-not (Test-FileSha256 $tmp $sum)) { throw 'its SHA-256 differs from the published one' }
         Move-Item -LiteralPath $exe -Destination $old -Force
         try { Move-Item -LiteralPath $tmp -Destination $exe -Force }
         catch { Move-Item -LiteralPath $old -Destination $exe -Force; throw }
-        Write-Info "launcher: OpenSmash.exe is now $($tag)'s. Close OpenSmash and open it again to use it."
+        Write-Info "launcher: OpenSmash.exe is now $($label)'s. Close OpenSmash and open it again to use it."
         $Script:LauncherIsRelease = $true
         return $true
     } catch {

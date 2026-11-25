@@ -643,5 +643,47 @@ class Mismatch(ClientTest):
         self.assertTrue(until(lambda: "Mods you don't have: Alpha" in g.status(), 5), g.status())
 
 
+class NoTicket(ClientTest):
+    """The official lobby (SSBU_OFFICIAL_LOBBY: a fake one here) and no lobby ticket (#510): the status says so, and what
+    to do by what started the game. A launcher that names itself (OPENSMASH_LAUNCHER_VERSION) or the ticket's file can
+    sign in; with neither, on Windows, it is an OpenSmash.exe from before the account sign-in (or no launcher), which
+    cannot."""
+    def status(self, **env):
+        lobby = FakeLobby()
+        self.fakes.append(lobby)
+        more = dict(SSBU_OFFICIAL_LOBBY=lobby.address, OPENSMASH_LAUNCHER_VERSION='', SSBU_ONLINE_TICKET='', SSBU_ONLINE_TICKET_FILE='')
+        more.update(env)
+        g = self.game(lobby.address, protocol=2, name='Alpha', **more)
+        g.status()
+        join, at = lobby.next(R.JOIN)
+        # (the lobby refuses a JOIN without a ticket: its own text, which the game's own says better)
+        lobby.s.sendto(b'SN\x02' + bytes((R.REJECT,)) + join[4:12] + b'\x06' + b'sign in to play online'.ljust(64, b'\0'), at)
+        until(lambda: 'connecting' not in g.status(), 2)
+        return join, g.status()
+
+    def test_old_launcher_or_none(self):
+        _, status = self.status()
+        self.assertTrue(status.startswith('Netplay: not signed in, the official lobby takes signed-in players only'), status)
+        if os.name == 'nt':
+            self.assertIn('this launcher is too old to sign in', status)
+            self.assertIn('tools\\build_launcher.ps1', status)
+        else:
+            self.assertIn('start the game from the OpenSmash launcher and SIGN IN there', status)
+
+    def test_launcher_that_signs_in(self):
+        for env in (dict(OPENSMASH_LAUNCHER_VERSION='0.5.0'), dict(SSBU_ONLINE_TICKET_FILE=os.path.join(self.folder, 'no_pass.txt'))):
+            with self.subTest(**env):
+                _, status = self.status(**env)
+                self.assertTrue(status.startswith('Netplay: not signed in'), status)
+                self.assertIn('SIGN IN in the OpenSmash launcher, then join again', status)
+                self.assertNotIn('too old', status)
+
+    def test_signed_in(self):
+        join, status = self.status(SSBU_ONLINE_TICKET='0123|Alpha|4102444800.sig')
+        self.assertIn(b'0123|Alpha|4102444800.sig', join)
+        self.assertNotIn('not signed in', status)
+        self.assertIn('sign in to play online', status)   # (the lobby's own refusal, as before)
+
+
 if __name__ == '__main__':
     unittest.main()
