@@ -546,6 +546,8 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
  * with such an SDK had the link stop on "undefined symbol: IID_IDXGIFactory6". */
 static const IID IID_IDXGIFactory6_ = {0xC1B6694F, 0xFF09, 0x44A9, {0xB0, 0x3C, 0x77, 0x90, 0x0A, 0x0A, 0x1D, 0x17}};
 
+static const char *cache_dir(void);
+
 static void adapter_name(const DXGI_ADAPTER_DESC1 *d, char *out, size_t size) {
     size_t i = 0;
     for (; i + 1 < size && d->Description[i]; i++) out[i] = d->Description[i] < 128 ? (char)d->Description[i] : '?';
@@ -554,6 +556,9 @@ static void adapter_name(const DXGI_ADAPTER_DESC1 *d, char *out, size_t size) {
 
 /* The graphics cards' names, fastest first, without the software ones (the settings menu). */
 int gfx_adapter_names(char names[][64], int max) {
+#ifndef _WIN32
+    nv_cache_vulkan_setup(cache_dir());   /* (Linux: NVIDIA's driver cache in the game's folder, before DXVK loads the driver) */
+#endif
     IDXGIFactory1 *f1;
     if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) return 0;
     IDXGIFactory6 *f6 = NULL;
@@ -586,6 +591,9 @@ static IDXGIAdapter1 *pick_adapter(int *warp) {
     *warp = !_stricmp(want, "warp");
     if (*warp) return NULL;
     int any = !*want || !_stricmp(want, "auto");
+#ifndef _WIN32
+    nv_cache_vulkan_setup(cache_dir());   /* (Linux: as gfx_adapter_names; once: it then finds the variable set) */
+#endif
     IDXGIFactory1 *f1;
     if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&f1))) return NULL;
     IDXGIFactory6 *f6 = NULL;
@@ -2782,6 +2790,7 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     int lock = warm_lock(dir);
     if (lock == -2) { fprintf(stderr, "[warm] another warm pass is running in %s; skipping\n", dir); return 0; }
     if (lock < 0) fprintf(stderr, "[warm] cannot make %s/warm.lock (%s): going on without it\n", dir, strerror(errno));
+    nv_cache_vulkan_setup(dir);   /* (NVIDIA: the GPU code it compiles goes where the game will read it, gpu_nvcache.c) */
     int rewarm = (arg && !strcmp(arg, "rewarm")) || (getenv("SSBU_SHADER_WARM_ALL") && atoi(getenv("SSBU_SHADER_WARM_ALL")));
     /* the processor below what the user does, as the compile workers are (the game is not running:
      * Prepare Shaders is) */

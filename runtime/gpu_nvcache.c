@@ -279,9 +279,38 @@ void nv_cache_check(int vulkan) {
     if (t) CloseHandle(t);
 }
 
-#else   /* (Linux and macOS: the driver's caches are not these) */
+#else   /* (Linux and macOS: no DXCache, no NvAPI) */
 
-void nv_cache_vulkan_setup(const char *shader_cache_dir) { (void)shader_cache_dir; }
+#include <errno.h>
+#include <limits.h>
+#include <sys/stat.h>
+
+/* Linux: the same move as on Windows, for DXVK as well as the Vulkan renderer (both draw through NVIDIA's Vulkan
+ * driver, which keeps its GPU code in ~/.cache/nvidia/GLCache, shared by every Vulkan and OpenGL program and capped
+ * as a whole by __GL_SHADER_DISK_CACHE_SIZE). Measured on an RTX 3080 (driver 620.70.06) whose GLCache sat at its
+ * 12 GB limit, 10.7 GB of it one other program's set: Prepare Shaders' warm pass drew all 65,257 programs and the
+ * driver kept 4 MB of what it compiled, so every new move compiled again during a match. In <shader cache>/nvidia the
+ * limit is the game's alone; with no size set by the player, __GL_SHADER_DISK_CACHE_SKIP_CLEANUP keeps the driver's
+ * default (far below a full cache's few GB) from throwing the warm pass away. The build's exe keeps one path
+ * (build-linux/ssbu), so one set lives there. Does nothing when __GL_SHADER_DISK_CACHE_PATH is set already (the
+ * player's own choice, or a call before this one: the game, then the warm pass) or SSBU_NV_CACHE=0; another
+ * driver ignores these variables. Call it before DXVK or the Vulkan loader loads the driver. */
+void nv_cache_vulkan_setup(const char *shader_cache_dir) {
+    const char *on = getenv("SSBU_NV_CACHE");
+    if (on && !strcmp(on, "0")) return;
+    if (getenv("__GL_SHADER_DISK_CACHE_PATH") || !shader_cache_dir || !*shader_cache_dir) return;
+    const char *disk = getenv("__GL_SHADER_DISK_CACHE");
+    if (disk && !strcmp(disk, "0")) return;   /* (the player turned it off) */
+    char full[PATH_MAX], dir[PATH_MAX + 8];
+    if (!realpath(shader_cache_dir, full)) return;
+    snprintf(dir, sizeof dir, "%s/nvidia", full);
+    if (mkdir(dir, 0755) && errno != EEXIST) return;
+    setenv("__GL_SHADER_DISK_CACHE_PATH", dir, 1);
+    const char *size = getenv("__GL_SHADER_DISK_CACHE_SIZE");
+    if (!size || !*size) setenv("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", "1", 0);
+    fprintf(stderr, "[gfx] NVIDIA's shader cache: the game's own folder %s (%s)\n", dir,
+            size && *size ? "at most __GL_SHADER_DISK_CACHE_SIZE" : "no limit: the game's programs only");
+}
 void nv_cache_check(int vulkan) { (void)vulkan; }
 uint64_t nv_cache_trim(const char *dir, uint64_t cap, uint64_t keep_ms, uint32_t *removed, uint64_t *removed_bytes) {
     (void)dir; (void)cap; (void)keep_ms;
