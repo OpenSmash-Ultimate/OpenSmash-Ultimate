@@ -148,27 +148,28 @@ static int readable8(u64 a) {
     rd_lo = lo; rd_hi = hi;
     return 1;
 }
-extern __declspec(thread) int rt_probing;   /* (host.c: the crash handler leaves a fault to us) */
-static __declspec(noinline) u64 read8_at(u64 g) { return ld64(g); }
-static u64 read8_guarded(u64 g) {   /* (as gpu_d3d11.c's read_guarded) 0 where the read faults */
-    volatile u64 v = 0;
-    int was = rt_probing;
-    rt_probing = 1;
-    __try { v = read8_at(g); }   /* (a call of its own: a fault inside __try is only caught reliably in a callee) */
-    __except (EXCEPTION_EXECUTE_HANDLER) { v = 0; }
-    rt_probing = was;
-    return v;
+/* An alias-area frame record: the job workers' and fibers' stacks are jemalloc blocks there. Memory there comes and goes
+ * under any thread (UnmapPhysicalMemory, a rollback's load), so the region is asked each time, never kept. Asked only
+ * where it decides something: an allocation function of the list given with its caller (lr2_wanted), or the census. */
+static int alias_readable8(u64 a) {
+    MEMORY_BASIC_INFORMATION mi;
+    if (!VirtualQuery(G2H(a), &mi, sizeof mi) || mi.State != MEM_COMMIT || !mi.Protect || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
+    return a + 8 <= (u64)(uintptr_t)mi.BaseAddress - (u64)(uintptr_t)G2H(0) + mi.RegionSize;
+}
+static int lr2_wanted(u64 lr) {
+    if (census_on) return 1;
+    for (u32 i = 0; i < nwant; i++) if (want[i].lr == lr && want[i].lr2) return 1;
+    return 0;
 }
 static u32 site_now(Cpu *c) {
     u64 lr = c->x[30], fp = c->x[29], lr2 = 0;
     /* (a frame record on a guest stack: the stack area, or a stack the game made in its heap) */
     if (!(fp & 7) && ((fp >= STACK_BASE && fp < KERNEL_BASE + 0x1000000) || (fp >= HEAP_BASE && fp < HEAP_BASE + HEAP_LIMIT)) && readable8(fp + 8))
         lr2 = ld64(fp + 8);
-    /* (the job workers' and fibers' stacks are jemalloc blocks in the alias area - without them most sites had no
-     * caller's caller. There memory comes and goes under any thread (UnmapPhysicalMemory, a rollback's load), and x29
-     * is a record only by convention: just above the thread's own stack pointer, read guarded - a fault there is 0) */
-    else if (!(fp & 7) && fp >= ALIAS_BASE && fp < ALIAS_BASE + ALIAS_SIZE && fp >= c->sp && fp - c->sp < 0x10000)
-        lr2 = read8_guarded(fp + 8);
+    /* (or on an alias-area stack, just above the thread's own stack pointer: without them most sites had no caller's caller) */
+    else if (!(fp & 7) && fp >= ALIAS_BASE && fp < ALIAS_BASE + ALIAS_SIZE && fp >= c->sp && fp - c->sp < 0x10000 && lr2_wanted(lr)
+             && alias_readable8(fp + 8))
+        lr2 = ld64(fp + 8);
     u32 s = site_of(lr, lr2);
     if (s < SITE_MAX - 1 && site_out[s] == 0) site_out[s] = listed(lr, lr2) ? 2 : 1;   /* (1 kept, 2 left out) */
     return s;

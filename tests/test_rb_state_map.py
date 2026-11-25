@@ -125,7 +125,7 @@ class Owners(unittest.TestCase):
         # the census: pages wholly inside one block, and the written count in compare mode (SSBU_RB_SM_CMP, the default)
         self.assertIn('if (best == 0x1000) { x->whole++;', m)
         self.assertIn('int st = !sk && (sm_cmp > 0 || (sm_steady[wi] & m) != 0);', state)
-        self.assertIn('lr2 = read8_guarded(fp + 8);', m, 'the alias stacks: a guarded read')
+        self.assertIn('&& lr2_wanted(lr)', m, 'the alias stacks: only where the caller decides something')
 
 
 class RunAhead(unittest.TestCase):
