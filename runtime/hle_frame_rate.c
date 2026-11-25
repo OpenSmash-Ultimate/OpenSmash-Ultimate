@@ -14,9 +14,11 @@
  * speed - the mod's value - and the speed settings still work (training's 1/2 speed: 7 and 8 in turn at 240, 7.5 on
  * average). Back at 60 a second (an online match: display_refresh_mult) the game's own value is put back once.
  *
- * Its pads are read at every pass (hle_hid.c reads the controllers when the game asks, a new sample each time), so a
- * press is seen at most a 240th of a second after it happens, as on the console with the mod: what Steve's NIL
- * techniques - two frames to place the block - need, which 120 breaks and 240 does not (the owner's emulator tests).
+ * Its pads: hle_hid.c reads the controllers when the game asks, a new sample each time, but the game asks for player 1's
+ * pad only in the passes that run a logic frame (measured 2026-11-24, plan/INPUT_LAG_2026-11-24.md 4: 0.50 / 0.25 reads a
+ * pass at 120 / 240, all on the same phase), so input is still taken 60 times a second, as the logic that uses it. A
+ * read in the other passes could not be used before the next logic frame anyway: frame_rate gives smoother pictures,
+ * not less input delay (that is low_latency's and run-ahead's work).
  *
  * Refreshes the game missed: the frame end reports them (FRAME_END's third argument: refreshes counted since the last
  * frame, less one), and in the scenes that allow it the game catches up with one extra logic frame for each. At 60 a
