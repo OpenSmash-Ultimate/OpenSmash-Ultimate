@@ -1640,7 +1640,14 @@ def link(dirs, exe, rt_dir=None, steps=None):
     if GAME_DLL:   # (the NROs' list is the library's)
         objs, library = objs[:-1] + [funcs[:-2] + ".obj"], [tables[:-2] + ".obj", objs[-1]] + game
         cc.link(objs, exe)
-        cc.link_library(library, game_lib)
+        try:
+            cc.link_library(library, game_lib)
+        except Exception:
+            # a program without its library does not start, yet it would pass for a finished build (tools/skyline.py
+            # needs_build, the installer's "nothing that goes into the game changed": a run after this one skipped
+            # the link and said it was done): no program, so that run links again
+            os.remove(exe)
+            raise
     else:
         objs += game
         # a wrap no module has (a made-up game's modules, tools/mac/boottest): its original is a stub nothing calls

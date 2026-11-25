@@ -285,6 +285,28 @@ class InstallerDecisionTests(unittest.TestCase):
                           "Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' } | Out-Null")
         self.assertIn('nothing that goes into the game changed: no build', out)
 
+    def test_a_release_build_without_its_game_library_is_built_again(self):
+        # (a release's install builds the game as build\ssbu_game.dll beside the program, --game-dll: a program left
+        # without its library, by a build whose library link failed, does not start - "carry on" must build it again,
+        # not say nothing changed)
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, 'build'))
+            Path(tmp, 'build', 'ssbu.exe').write_bytes(b'the runtime alone')
+            run = (f"$Root = '{tmp}'; $DryRun = $false; $Rebuild = $false; $SkipBuild = $false; "
+                   "$env:OPENSMASH_RELEASE_TAG = 'v9.9.9'; $global:calls = [Collections.Generic.List[string]]::new(); "
+                   "function Invoke-Python { param($Arguments) $a = @($Arguments); $a[0] = Split-Path $a[0] -Leaf; "
+                   "$global:calls.Add($a -join ' '); if ($a[0] -eq 'build_game.py') { throw 'BUILT' }; return 0 }; "
+                   "try { Step-Build @{ Game = 'D:\\Game'; Keys = 'D:\\Keys'; Firmware = '' } | Out-Null } catch { }; "
+                   "'CALLS: ' + ($global:calls -join '|')")
+            out = ps_text(run)
+            self.assertNotIn('nothing that goes into the game changed', out)
+            self.assertIn('build_game.py --game D:\\Game --keys D:\\Keys --no-firmware --std-plugins --game-dll', out)
+            Path(tmp, 'build', 'ssbu_game.dll').write_bytes(b'the game')   # (with its library: current, as before)
+            out = ps_text(run)
+            self.assertIn('nothing that goes into the game changed: no build', out)
+            builds = [c for c in out.split('CALLS: ')[-1].strip().split('|') if c.startswith('build_game.py')]
+            self.assertTrue(builds and all(c.endswith('--prepare-only') for c in builds), out)   # (the DLC read only)
+
     def test_build_forgets_stale_prepared_shaders(self):
         # (built, or nothing to build: tools\shader_aot.py --forget-stale asks for Prepare Shaders again when the
         # prepared SPIR-V's names are not the game's; an update before this one may have changed them)

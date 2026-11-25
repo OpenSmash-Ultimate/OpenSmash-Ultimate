@@ -1721,8 +1721,11 @@ function Step-Build {
     if ($gameDll) { $build += '--game-dll' }
     if ($BuildAfterUpdate) { $build += '--no-input' }   # (the launcher's: nobody to answer a folder question there)
     if ($DryRun) { Write-Would ('run: ' + ($Script:Python -join ' ') + ' ' + ($build -join ' ')); return $false }
-    # (an update of the mod manager or other tools only: the game is as it was, no build - its own check)
+    # (an update of the mod manager or other tools only: the game is as it was, no build - its own check. A release's
+    # build is the program and its game library: a program without the library - a build whose library link failed -
+    # does not start, so that is a build to run again, not one to skip)
     if (-not $Rebuild -and -not $SkipBuild -and (Test-Path (Join-Path $Root 'build\ssbu.exe')) -and
+        (-not $gameDll -or (Test-Path (Join-Path $Root 'build\ssbu_game.dll'))) -and
         (Invoke-Python @((Join-Path $Root 'tools\skyline.py'), 'uptodate')) -eq 0) {
         Write-Info 'nothing that goes into the game changed: no build'
         # (DLC put in the game folder since the last build: build_game.py's step 7 reads it, quickly and without a
