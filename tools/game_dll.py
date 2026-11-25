@@ -26,8 +26,9 @@ TABLES, FUNCS = "game_tables.c", "game_funcs.c"
 
 # The runtime functions the generated C calls besides the HLE(...) and HLE_WRAP(...) ones, as
 # runtime/recomp.h declares them (tools/lift.py writes the calls; rt_unwind_jumpto is the native
-# form of libunwind's jumpto, tools/recomp.py): (name, head of the library's function, its
-# arguments). rt_eh_filter's first parameter is the host exception's, which differs on Windows.
+# form of libunwind's jumpto, tools/recomp.py; rt_inline_hook runs a Skyline plugin's inline hook,
+# runtime/hle_skyline.c - those two the generated C declares itself): (name, head of the library's
+# function, its arguments). rt_eh_filter's first parameter is the host exception's, which differs on Windows.
 # Not rt_hook_add (hookable.h): the library's own lists its hook slots, for the program to add.
 CORE = (
     ("rt_lookup", "GuestFn *rt_lookup(u64 guest_addr)", "guest_addr"),
@@ -41,6 +42,7 @@ CORE = (
     ("rt_unwind_jumpto", "void rt_unwind_jumpto(Cpu *c)", "c"),
     ("rt_code_patches_on", "int rt_code_patches_on(void)", ""),
     ("rt_plugin_patches_on", "int rt_plugin_patches_on(void)", ""),
+    ("rt_inline_hook", "void rt_inline_hook(Cpu *c, u64 at)", "c, at"),
 )
 MISSING = "wrapped guest function missing from this build's modules"   # (runtime/host.c rt_wrap_missing's words)
 
@@ -132,7 +134,7 @@ def funcs_text(runtime):
            " * tools/game_dll.py from the runtime's sources: the runtime functions the library calls, by name (the HLE ones\n"
            " * are hle_table's), and each HLE_WRAP's original, which the library has: runtime/host.c fills its slot. */\n",
            '#include "host.h"\n#include "game_dll.h"\n\n',
-           "GuestFn rt_unwind_jumpto, rt_wrap_missing;\n"]
+           "GuestFn rt_unwind_jumpto, rt_wrap_missing;\nvoid rt_inline_hook(Cpu *c, u64 at);\n"]
     out += [f"GuestFn hle_wrap_{a:x};\n" for a in addresses]
     out += [f"void hle_wrap_{n}(Cpu *c, GuestFn *orig);\n" for n in exported]
     out += [f"static GuestFn *orig_{a:x} = rt_wrap_missing;\nvoid f_{a:x}_orig(Cpu *c) {{ orig_{a:x}(c); }}\n" for a in addresses]

@@ -14,6 +14,7 @@ import io
 import os
 import re
 import runpy
+import struct
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ sys.path.insert(0, str(ROOT / 'tests'))
 sys.path.insert(0, str(ROOT / 'tools' / 'dev'))
 import cc  # noqa: E402
 import game_dll  # noqa: E402
+import lift  # noqa: E402
 import recomp  # noqa: E402
 import runtime_compile_check as check  # noqa: E402
 import test_mac_build as mac_tests  # noqa: E402  (build_mac.py loaded with its toolchain stood in for)
@@ -126,18 +128,40 @@ class RealRuntime(unittest.TestCase):
                          (sorted(recomp.hle_names()), sorted(recomp.hle_wraps()), sorted(recomp.hle_export_wraps())))
 
     def test_core_is_what_recomp_h_declares(self):
-        """Each CORE function is declared so in runtime/recomp.h (rt_unwind_jumpto, which the generated C declares
-        itself, is defined so in the runtime), and recomp.h declares no other runtime function the C could call: one
-        added there is one the library calls through a slot of its own (and RT_GAME_ABI changes with it)."""
+        """Each CORE function is declared so in runtime/recomp.h (rt_unwind_jumpto and rt_inline_hook, which the
+        generated C declares itself, are defined so in the runtime), and recomp.h declares no other runtime function
+        the C could call: one added there is one the library calls through a slot of its own (and RT_GAME_ABI changes
+        with it)."""
         header = (RUNTIME / 'recomp.h').read_text()
+        own = {'rt_unwind_jumpto': 'hle_unwind.c', 'rt_inline_hook': 'hle_skyline.c'}   # (where each is defined)
         for name, head, _args in game_dll.CORE:
             for h in head if isinstance(head, tuple) else (head,):
-                if name == 'rt_unwind_jumpto':
-                    self.assertIn(h + ' {', (RUNTIME / 'hle_unwind.c').read_text())
+                if name in own:
+                    self.assertIn(h + ' {', (RUNTIME / own[name]).read_text(encoding='utf-8'))
                 else:
                     self.assertIn(h + ';', header)
         declared = set(re.findall(r'^(?!static)(?:_Noreturn )?\w[\w ]*?[ *](rt_\w+)\([^;{]*\);', header, re.M))
-        self.assertEqual(declared, set(CORE) - {'rt_unwind_jumpto'})
+        self.assertEqual(declared, set(CORE) - set(own))
+
+    def test_what_the_lifted_c_declares_itself_has_a_slot(self):
+        """A runtime function the generated C declares for itself, not through recomp.h (tools/lift.py's `extern`s),
+        is called through a slot all the same: the library has no other way to it. rt_inline_hook, at each Skyline
+        inline hook (the CSK Collection's, Smashline's), had none, and every --game-dll build with those plugins
+        stopped at the library's link: "lld-link: error: undefined symbol: rt_inline_hook"."""
+        written = set(re.findall(r'extern [\w ]*?[ *](rt_\w+)\(', (ROOT / 'tools' / 'lift.py').read_text(encoding='utf-8')))
+        self.assertIn('rt_inline_hook', written)
+        self.assertLessEqual(written, set(CORE))
+        # (the C of a function with an inline point, as the build writes it)
+        mov_w0_1, ret = 0x52800020, 0xD65F03C0
+        text, _reasons, _callees = lift.Lifter(struct.pack('<2I', mov_w0_1, ret) + bytes(8), {0}, inline={0}).lift_function(0, 8)
+        self.assertIn('rt_inline_hook(c, 0x7100000000ull);', text)
+        self.assertEqual(set(re.findall(r'extern [\w ]*?[ *](rt_\w+)\(', text)), {'rt_inline_hook'})
+        slot = [n for n, _k in game_dll.imports(RUNTIME)].index('rt_inline_hook')
+        self.assertIn('void rt_inline_hook(Cpu *c, u64 at) { ((__typeof__(&rt_inline_hook))rt_game_slots'
+                      f'[{slot}])(c, at); }}\n', game_dll.tables_text(RUNTIME))
+        funcs = game_dll.funcs_text(RUNTIME)
+        self.assertIn('void rt_inline_hook(Cpu *c, u64 at);\n', funcs)   # (declared before the table names it)
+        self.assertIn('    {"rt_inline_hook", (RtGameFn *)rt_inline_hook, 0, 0},\n', funcs)
 
     def test_the_header_names_what_the_builds_do(self):
         header = (RUNTIME / 'game_dll.h').read_text()
@@ -266,6 +290,28 @@ class WindowsLink(made_up.Folder):
                                             str(self.module / 'g0000.obj'), str(self.module / 'g_module.obj')], str(self.dll))])
         self.assertIn(f'linked 4 objects into {self.dll}', self.said)
         self.assertEqual(self.link(True), (True, []))
+
+    def test_a_failed_library_link_leaves_no_program(self):
+        """The program is linked first; when the library's link then fails, the program goes too: one without its
+        library does not start, yet it would pass for a finished build (tools/skyline.py needs_build, the installer's
+        "nothing that goes into the game changed"), and a run after this one would skip the link and say done."""
+        self.link(True)
+        self.assertTrue(self.exe.exists() and self.dll.exists())
+
+        def link(objs, exe, options=()):
+            Path(exe).write_bytes(b'MZ')
+
+        def link_library(objs, path):
+            raise RuntimeError("the game library's link failed\nlld-link: error: undefined symbol: rt_made_up")
+        with mock.patch.object(recomp, 'GAME_DLL', True), mock.patch.object(cc, 'link', link), \
+                mock.patch.object(cc, 'link_library', link_library), contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaises(RuntimeError):
+            recomp.link([str(self.module)], str(self.exe), str(self.rt))
+        self.assertFalse(self.exe.exists())
+        self.assertFalse(self.dll.exists())
+        ok, _runs = self.link(True)   # (the next run: nothing to compile, both linked)
+        self.assertTrue(ok, self.said)
+        self.assertTrue(self.exe.exists() and self.dll.exists())
 
     def test_back_and_forth(self):
         """Without the switch the build is what it was: the runtime compiled again (its command changed), the game's
