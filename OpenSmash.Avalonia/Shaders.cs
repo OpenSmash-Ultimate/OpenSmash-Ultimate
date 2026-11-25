@@ -32,6 +32,10 @@ public sealed partial class MainWindow
     async Task AskShaders()
     {
         if(_closed||_project?.IsBuilt!=true||ShadersDone()||Surface.HasPrompt||_shaderCancel!=null)return;
+        // As the Windows launcher (LauncherForm.AskShadersIfNeeded): prepared in the background at low priority, not asked -
+        // a player who answered "later" played with every shader made at its first draw (menus and first matches stutter).
+        // tools/shader_aot.py pauses while the game runs and resumes where it stopped. OPENSMASH_SHADERS_AUTO=0: asked, as before.
+        if(Environment.GetEnvironmentVariable("OPENSMASH_SHADERS_AUTO")!="0"){_=CompileShaders("low");return;}
         string priority=await Surface.ShowShaderPrompt();
         if(priority is "low" or "medium" or "high")_=CompileShaders(priority);
     }
