@@ -635,6 +635,41 @@ static class Program
         Check(!clean.Contains(home) && !clean.Contains("93.184.216.34") && clean.Contains("10.13.0.5") && !clean.Contains("example.com") &&
               clean.Contains("<pass>") && clean.Contains("<install>\\build"), "report cleaned: " + clean);
 
+        // ---- a report longer than what is sent: its start (with "Why:") and its end, a line saying what was left out
+        string rroot = Path.Combine(Path.GetTempPath(), "os-core-report-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(rroot);
+        try
+        {
+            string small = Path.Combine(rroot, "rollback_small.txt");
+            File.WriteAllText(small, "Rollback netplay report (made up)\nWhy: a made-up reason\n\n00:00:00.000 [rb] one line\n");
+            Check(CrashReport.HeadAndTail(small, CrashReport.MaxReport, CrashReport.ReportHead) == File.ReadAllText(small), "report: a short one is sent whole");
+            Check(CrashReport.Title(File.ReadAllText(small), "rollback") == "a made-up reason", "report: a rollback report's title is its Why");
+            Check(CrashReport.Title("\n*** host exception 0xc0000005 during play: reading address 0 (made up)\nmore\n", "crash")
+                  == "*** host exception 0xc0000005 during play: reading address 0 (made up)", "report: a crash report's title is its first line");
+            Check(CrashReport.Title("", "freeze") == "freeze", "report: an empty one is called by its kind");
+
+            string big = Path.Combine(rroot, "rollback_big.txt");
+            var sb = new StringBuilder("Rollback netplay report (made up)\nWhy: the made-up reason at the start\n\n");
+            for (int i = 0; i < 20000; i++) sb.Append("00:00:00.000 [rb] made-up line ").Append(i).Append(" é\n");
+            sb.Append("the last line\n");
+            File.WriteAllText(big, sb.ToString());
+            long length = new FileInfo(big).Length;
+            string sent = CrashReport.HeadAndTail(big, CrashReport.MaxReport, CrashReport.ReportHead);
+            int bytes = Encoding.UTF8.GetByteCount(sent);
+            var omitted = System.Text.RegularExpressions.Regex.Match(sent, @"\n\.\.\. (\d+) bytes omitted \.\.\.\n\n");
+            Check(length > CrashReport.MaxReport && bytes <= CrashReport.MaxReport && bytes > CrashReport.MaxReport - 200, "report: a long one fills the limit, not more (" + bytes + ")");
+            Check(sent.StartsWith("Rollback netplay report (made up)\nWhy: the made-up reason at the start\n") && sent.EndsWith("the last line\n"), "report: a long one's start and end");
+            Check(omitted.Success && long.Parse(omitted.Groups[1].Value) + bytes - Encoding.UTF8.GetByteCount(omitted.Value) == length, "report: what was left out, in bytes");
+            Check(!sent.Contains('�') && sent.Split('\n').Where(l => l.StartsWith("00:")).All(l => l.EndsWith(" é")), "report: whole lines only on both sides of the cut");
+            Check(CrashReport.Title(sent, "rollback") == "the made-up reason at the start", "report: a long rollback report's title is still its Why");
+
+            string oneLine = Path.Combine(rroot, "crash_one_line.txt");
+            File.WriteAllText(oneLine, new string('x', CrashReport.MaxReport * 2));
+            sent = CrashReport.HeadAndTail(oneLine, CrashReport.MaxReport, CrashReport.ReportHead);
+            Check(Encoding.UTF8.GetByteCount(sent) <= CrashReport.MaxReport && sent.StartsWith(new string('x', 1000)) && sent.Contains(" bytes omitted ..."), "report: no line ends at all, still within the limit");
+        }
+        finally { try { Directory.Delete(rroot, true); } catch { } }
+
         // ---- the session's performance summary
         string perf = "{\"schema\":1,\"clean_exit\":true,\"session_s\":300,\"frames\":18000,\"ft_p50\":16.62,\"ft_p99\":21.5,\"stutters\":3," +
                       "\"hist\":{\"<8\":0,\"<12\":1,\">=100\":2},\"rb_rollbacks\":120,\"path\":\"C:/Users/someone\",\"name\":\"someone\"}";

@@ -20,6 +20,7 @@ namespace OpenSmash.Core
     public static class CrashReport
     {
         public const int MaxLog = 1024 * 1024, MaxReport = 256 * 1024;   // bytes sent at most of each file
+        public const int ReportHead = 64 * 1024;   // of a longer report: its start sent (what happened, "Why:"), then its end
         static readonly string[] Kinds = { "crash", "freeze", "rollback" };
 
         /// <summary>the newest report written since the game started, or null</summary>
@@ -65,6 +66,47 @@ namespace OpenSmash.Core
             return Encoding.UTF8.GetString(b, 0, n);
         }
 
+        /// <summary>the file whole when it has max bytes at most; else its first lines (about head bytes: where a report says
+        /// what happened, a rollback report's "Why:"), a line "... N bytes omitted ...", and its last lines, max bytes in all.
+        /// (Before, a long report's last max bytes only were sent: a rollback report's kept [rb] lines pushed out its "Why:".)</summary>
+        public static string HeadAndTail(string path, int max, int head)
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            long length = fs.Length;
+            if (length <= max) return Encoding.UTF8.GetString(Read(fs, 0, (int)length));
+            const int markRoom = 64;   // (the line between them, whatever N's digits)
+            head = Math.Max(0, Math.Min(head, max - markRoom));
+            byte[] a = Read(fs, 0, head);
+            int nl = Array.LastIndexOf(a, (byte)'\n');
+            int aLen = nl >= 0 ? nl + 1 : a.Length;   // (whole lines, unless the first is longer than head)
+            int room = max - aLen - markRoom;
+            byte[] b = Read(fs, length - room, room);
+            nl = Array.IndexOf(b, (byte)'\n');
+            int bStart = nl >= 0 && nl + 1 < b.Length ? nl + 1 : 0;   // (whole lines too)
+            long omitted = length - aLen - (b.Length - bStart);
+            return Encoding.UTF8.GetString(a, 0, aLen) + "\n... " + omitted.ToString(CultureInfo.InvariantCulture) + " bytes omitted ...\n\n" +
+                   Encoding.UTF8.GetString(b, bStart, b.Length - bStart);
+        }
+
+        static byte[] Read(FileStream fs, long at, int count)
+        {
+            var b = new byte[count];
+            fs.Seek(at, SeekOrigin.Begin);
+            int n = 0, r;
+            while (n < count && (r = fs.Read(b, n, count - n)) > 0) n += r;
+            if (n < count) Array.Resize(ref b, n);
+            return b;
+        }
+
+        /// <summary>the report's title: its "Why:" when one is among its first lines (rollback reports), else its first line</summary>
+        public static string Title(string report, string kind)
+        {
+            var lines = report.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).Take(10).ToList();
+            string why = lines.FirstOrDefault(l => l.StartsWith("Why:", StringComparison.Ordinal));
+            string first = why != null && why.Length > 4 ? why.Substring(4).Trim() : lines.FirstOrDefault() ?? kind;
+            return first.Length > 300 ? first.Substring(0, 300) : first;
+        }
+
         /// <summary>after a game: true when a report was found and sent. Every outcome goes to log.</summary>
         public static async Task<bool> SendIfAnyAsync(Account account, string root, DateTime startedUtc, bool enabled, string commit, Action<string> log)
         {
@@ -75,11 +117,10 @@ namespace OpenSmash.Core
             try
             {
                 string kind = Path.GetFileName(file).Split('_')[0].ToLowerInvariant();
-                string report = Clean(Tail(file, MaxReport), root);
+                string report = Clean(HeadAndTail(file, MaxReport, ReportHead), root);
                 string playLog = Path.Combine(root, "build", "play.log");
                 string logText = File.Exists(playLog) ? Clean(Tail(playLog, MaxLog), root) : null;
-                string first = report.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? kind;
-                if (first.Length > 300) first = first.Substring(0, 300);
+                string first = Title(report, kind);
                 var gpu = logText == null ? null : Regex.Match(logText, @"(?:Vulkan|D3D11|device)[^\r\n]{0,20}:\s*([^\r\n(]{4,80})");
                 string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
                 string folder = "r/" + account.Me.Id + "/" + stamp + "-os";   // (the bucket's policy: r/<own id>/...; the product is a column)

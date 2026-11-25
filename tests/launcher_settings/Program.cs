@@ -57,6 +57,7 @@ static class Tests
             Presence(Path.Combine(root, "presence"));
             ShaderRebuild(Path.Combine(root, "shaders"));
             UpdateChannel().GetAwaiter().GetResult();
+            GameRestart(Path.Combine(root, "restart"));
             // (a real SDL3.dll, when one is given: it loads and lists the pads, none needed)
             string? sdl = Environment.GetEnvironmentVariable("LAUNCHER_TEST_SDL_DIR");
             if (!string.IsNullOrEmpty(sdl))
@@ -480,6 +481,31 @@ static class Tests
                 RequestMessage = new HttpRequestMessage(request.Method, new Uri("https://github.com" + PageLands)),
             });
         }
+    }
+
+    // A game started again from its settings (runtime/hle_settings.c settings_restart) is a new process with the same output,
+    // after the first has ended: its lines go on into play.log, and the game's end (GameFolder.Ended, where the launcher
+    // sends a crash report) is the restarted game's. (proc's Exited came with the first's: the report was looked for, and
+    // play.log read, at "[settings] starting the game again".) A made-up game: cmd scripts, the second started by the first.
+    static void GameRestart(string dir)
+    {
+        Directory.CreateDirectory(dir);
+        string first = Path.Combine(dir, "first.cmd"), second = Path.Combine(dir, "second.cmd"), log = Path.Combine(dir, "play.log");
+        File.WriteAllText(first, "@echo [settings] starting the game again\r\n@start \"\" /b cmd /d /c \"" + second + "\"\r\n");
+        File.WriteAllText(second, "@ping -n 4 127.0.0.1 >nul\r\n@echo [boot] started again\r\n@echo *** host exception (made up)\r\n");
+        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        foreach (string a in new[] { "/d", "/c", first }) psi.ArgumentList.Add(a);
+        using var proc = GameFolder.StartLogged(psi, log);
+        Check(proc != null && proc.WaitForExit(15000), "restart: the first process ends at once");
+        var ended = GameFolder.Ended(proc!);
+        Check(!ended.Wait(300), "restart: the game has not ended with its first process");
+        Check(ended.Wait(30000), "restart: the game ends with the one started again");
+        string text = File.ReadAllText(log);
+        Check(text.Contains("starting the game again") && text.Contains("started again") && text.Contains("*** host exception (made up)"),
+            "restart: the restarted game's lines are in the log at its end: " + text);
     }
 
     // The update check's release channel and the verdict after an update (Discord "Can't update", 2026-11-18): GitHub not

@@ -4308,7 +4308,9 @@ namespace OpenSmash.Launcher
                 var proc = _gameProcess;
                 Hide();
                 ShowInTaskbar = false;
-                await Task.Run(() => { try { proc.WaitForExit(); } catch { } });
+                await GameFolder.Ended(proc);   // (and a game started again from its settings)
+                // (the report and the summary on their way: closing ends the launcher's process, and an upload with it)
+                await Task.WhenAny(_afterGame, Task.Delay(30000));
             }
             Close();
         }

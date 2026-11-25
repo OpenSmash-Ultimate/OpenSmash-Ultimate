@@ -215,10 +215,19 @@ namespace OpenSmash.Launcher
             foreach (string v in ClearedVars) psi.EnvironmentVariables.Remove(v);
             psi.EnvironmentVariables[OpenSmash.Core.VersionInfo.EnvName] = OpenSmash.Core.VersionInfo.Launcher;   // (the game's Esc menu shows it)
             if (onlinePassFile != null) psi.EnvironmentVariables["SSBU_ONLINE_TICKET_FILE"] = onlinePassFile;   // (v0.5.0: the account's lobby ticket)
+            var proc = StartLogged(psi, log);
+            if (proc != null) try { AllowSetForegroundWindow(proc.Id); } catch { }
+            return proc;
+        }
+
+        /// <summary>psi (its output redirected) started, every line it writes appended to log. A game started again from
+        /// its settings (runtime/hle_settings.c settings_restart) is a new process with the same output, so its lines go
+        /// on into the same log after proc has ended.</summary>
+        internal static Process? StartLogged(ProcessStartInfo psi, string log)
+        {
             var logLock = new object();
             var proc = Process.Start(psi);
             if (proc == null) return null;
-            try { AllowSetForegroundWindow(proc.Id); } catch { }
             void Write(string? line)
             {
                 if (line == null) return;
@@ -233,5 +242,11 @@ namespace OpenSmash.Launcher
             proc.BeginErrorReadLine();
             return proc;
         }
+
+        /// <summary>the end of a game StartLogged started: of proc and of every game started again after it. proc's Exited
+        /// (and HasExited) come with proc's own end, the first of them; WaitForExit() with no time limit waits for the end
+        /// of the redirected output too, which a game started again keeps open until it ends (and all its lines are in
+        /// the log by then).</summary>
+        public static Task Ended(Process proc) => Task.Run(() => { try { proc.WaitForExit(); } catch { } });
     }
 }
