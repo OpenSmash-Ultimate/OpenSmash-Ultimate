@@ -1618,6 +1618,69 @@ static void ui_path(Cpu *c) {
     rt_call(c, ui_path_original);
 }
 
+/* The CSK Collection's picture loads with an old loader. Its hook on main+0x323c4e0 (a UI layout's
+ * picture load: (loader, &path hash, x2, w3); the_csk_collection+0xf2f0c) keeps x0, x2 and w3 of each
+ * call, and some of its other hooks call main+0x323c4e0 again with those kept arguments: the portrait
+ * paths' (main+0x3238a70, +0x10f0b8; the call returns to +0x10f1a4) when the picture kind is 2 and a flag
+ * of its own is 0. The flag is 1 only on the character select screen: from its hook on main+0x1846880 (the
+ * screen's set-up) to its inline hook at main+0x18472dc (+0x10f5c0, the screen's destructor). Leaving the
+ * select screen for a match, each fighter's kind 2 picture (the match HUD's) is asked, on the game's
+ * thread and on another one, and the plugin calls again each time (54 calls for a 1-v-1). The loader kept
+ * is the last call's, from whatever screen made it: if that screen is gone by then (its loader freed or
+ * reused), the load reads garbage (crash reports: a guest worker thread, callers main+0x1861e60 /
+ * 0x1863d90, a read at 0xa0 or at a non-canonical address). The game loads the picture itself, with its
+ * own loader (main+0x13d8e2c, right after the path). So a call from the CSK Collection's code that
+ * repeats the last call's arguments is left out;
+ * its other calls (a loader its caller handed it: +0xed028) go on. Installed in front of the plugin's
+ * hook (after the plugins' mains). SSBU_CSK_GUARD=0 lets every call through; SSBU_CSK_GUARD_LOG=1 logs
+ * each call, the plugin's with the last loader the game passed. */
+#define IMAGE_LOAD 0x323c4e0
+u64 rt_module_named(const char *name, u64 *image_size, u64 *text_size);   /* (host.c) */
+static u64 image_load_original, csk_lo, csk_hi;   /* (csk_lo..csk_hi: the_csk_collection's image) */
+static int csk_guard = 1, csk_guard_log;
+static SRWLOCK image_load_lock = SRWLOCK_INIT;
+static struct { u64 x0, x2; u32 w3; } image_load_last;   /* the last call passed on: what the plugin's hook kept */
+static u64 image_load_game;                           /* the last loader a call from the game passed */
+static int image_load_watch;                          /* (log: the game's first call after one from the plugin) */
+static u32 csk_replays;
+
+static void image_load(Cpu *c) {
+    u64 from = c->x[30], x0 = c->x[0], x2 = c->x[2];
+    u32 w3 = (u32)c->x[3];
+    char who[96];
+    if (from < csk_lo || from >= csk_hi) {   /* (the game's call) */
+        AcquireSRWLockExclusive(&image_load_lock);
+        int watch = image_load_watch;
+        image_load_watch = 0;
+        image_load_game = x0;
+        image_load_last.x0 = x0, image_load_last.x2 = x2, image_load_last.w3 = w3;
+        ReleaseSRWLockExclusive(&image_load_lock);
+        if (csk_guard_log)
+            fprintf(stderr, "[skyline] csk guard: the game's picture load%s: loader %#llx (x2 %#llx, w3 %u; from %s, thread %lu)\n",
+                    watch ? " after the plugin's" : "", (unsigned long long)x0, (unsigned long long)x2, w3,
+                    rt_describe(from, who, sizeof who), GetCurrentThreadId());
+        rt_call(c, image_load_original);
+        return;
+    }
+    AcquireSRWLockExclusive(&image_load_lock);
+    int replay = x0 == image_load_last.x0 && x2 == image_load_last.x2 && w3 == image_load_last.w3;
+    u64 game = image_load_game;
+    int skip = replay && csk_guard;
+    image_load_watch = csk_guard_log;
+    if (!skip) image_load_last.x0 = x0, image_load_last.x2 = x2, image_load_last.w3 = w3;
+    u32 n = replay ? ++csk_replays : csk_replays;
+    ReleaseSRWLockExclusive(&image_load_lock);
+    if (csk_guard_log || (skip && n == 1))
+        fprintf(stderr, "[skyline] csk guard: a picture load from %s with loader %#llx (x2 %#llx, w3 %u; the game's last "
+                "loader %#llx), thread %lu: %s%s (%u so far)\n", rt_describe(from, who, sizeof who), (unsigned long long)x0,
+                (unsigned long long)x2, w3, (unsigned long long)game, GetCurrentThreadId(),
+                replay ? "the last call's arguments again" : "a loader of its own",
+                skip ? ", left out" : ", passed on", n);
+    if (!skip) rt_call(c, image_load_original);
+    /* (left out: the registers as they came, as the function returns for a picture already loaded; the
+     * plugin reads nothing back) */
+}
+
 /* The characters mods add with a ui_chara_db.prcxml alone, on another fighter's costumes (Popple:
  * Mario's from c24): no plugin calls the CSK Collection for them, so tools/mods.py prcxml_redirects
  * lists them (ui_chara hash40, first costume). A character already redirected keeps its first costume. */
@@ -1783,6 +1846,16 @@ void skyline_load_plugins(Cpu *c) {
         fprintf(stderr, "[skyline] plugin %s at %#llx: running main\n", names[i], (unsigned long long)bases[i]);
         if (entry) rt_call(c, entry);
         fprintf(stderr, "[skyline] plugin %s: main returned\n", names[i]);
+    }
+    u64 csk_size = 0;
+    if ((csk_lo = rt_module_named("the_csk_collection", &csk_size, NULL))) {   /* (in front of its hook: image_load) */
+        csk_hi = csk_lo + csk_size;
+        const char *g = getenv("SSBU_CSK_GUARD"), *gl = getenv("SSBU_CSK_GUARD_LOG");
+        csk_guard = !(g && *g == '0');
+        csk_guard_log = gl && *gl && *gl != '0';
+        image_load_original = rt_hook_function(MAIN_BASE + IMAGE_LOAD, rt_native(image_load, "csk guard: picture load"));
+        fprintf(stderr, "[skyline] csk guard: %s%s\n", !image_load_original ? "main+0x323c4e0 is not a function here, NOT installed"
+                : csk_guard ? "on" : "off (SSBU_CSK_GUARD=0), calls only watched", csk_guard_log ? ", every call logged" : "");
     }
     for (int ev = 0; ev < 2; ev++)   /* ArcFilesystemMounted, ModFilesystemMounted */
         for (u32 i = 0; i < event_n; i++)
