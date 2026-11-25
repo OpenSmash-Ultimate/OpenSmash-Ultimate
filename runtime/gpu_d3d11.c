@@ -6876,6 +6876,59 @@ static void gpu_timer_frame(void) {
     frame_event_cur = (frame_event_cur + 1) % FRAME_EVENTS;
 }
 
+/* The GPU's time per frame shown (display.h: gpu_frame_time_push; SSBU_GPU_TIMESTAMPS=0: off): a timestamp after each
+ * present, which the card writes when it reaches the next frame's first command, and one before the next present,
+ * inside a disjoint query; read back with DONOTFLUSH at the presents after (a ring of 8: never waited for, a frame
+ * whose set is still in flight goes untimed). From the frame's first command to its last: the card waiting between
+ * the commands while they are translated counts too, so it is the frame's span on the card, not its busy time. */
+#define FRAME_TS 8
+static ID3D11Query *frame_ts[FRAME_TS][3];   /* (disjoint, begin, end) */
+static int frame_ts_state[FRAME_TS], frame_ts_open = -1, frame_ts_failed;   /* (state: 0 free, 1 open, 2 ended) */
+static u32 frame_ts_read, frame_ts_cur;
+static int frame_ts_ready(void) {
+    if (frame_ts_failed || !gpu_timestamps_on()) return 0;
+    if (frame_ts[FRAME_TS - 1][2]) return 1;
+    D3D11_QUERY_DESC dq = {D3D11_QUERY_TIMESTAMP_DISJOINT, 0}, tq = {D3D11_QUERY_TIMESTAMP, 0};
+    for (u32 i = 0; i < FRAME_TS; i++)
+        if (FAILED(ID3D11Device_CreateQuery(dev, &dq, &frame_ts[i][0])) || FAILED(ID3D11Device_CreateQuery(dev, &tq, &frame_ts[i][1])) ||
+            FAILED(ID3D11Device_CreateQuery(dev, &tq, &frame_ts[i][2]))) {
+            frame_ts_failed = 1;
+            for (u32 j = 0; j <= i; j++)
+                for (u32 k = 0; k < 3; k++) if (frame_ts[j][k]) { ID3D11Query_Release(frame_ts[j][k]); frame_ts[j][k] = NULL; }
+            fprintf(stderr, "[gfx] GPU timestamps: cannot make the queries, frames not timed\n");
+            return 0;
+        }
+    return 1;
+}
+static void frame_ts_before_present(void) {   /* (the frame's end, and the frames ended before read if they are) */
+    if (!frame_ts_ready()) return;
+    while (frame_ts_state[frame_ts_read] == 2) {
+        ID3D11Query **q = frame_ts[frame_ts_read];
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj;
+        UINT64 t0 = 0, t1 = 0;
+        if (ID3D11DeviceContext_GetData(ctx, (ID3D11Asynchronous *)q[0], &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) break;
+        if (ID3D11DeviceContext_GetData(ctx, (ID3D11Asynchronous *)q[1], &t0, sizeof t0, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+            ID3D11DeviceContext_GetData(ctx, (ID3D11Asynchronous *)q[2], &t1, sizeof t1, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) break;
+        if (!dj.Disjoint && dj.Frequency && t1 >= t0) gpu_frame_time_push((double)(t1 - t0) * 1000.0 / (double)dj.Frequency, 0, 0);
+        frame_ts_state[frame_ts_read] = 0;
+        frame_ts_read = (frame_ts_read + 1) % FRAME_TS;
+    }
+    if (frame_ts_open >= 0) {
+        ID3D11DeviceContext_End(ctx, (ID3D11Asynchronous *)frame_ts[frame_ts_open][2]);
+        ID3D11DeviceContext_End(ctx, (ID3D11Asynchronous *)frame_ts[frame_ts_open][0]);
+        frame_ts_state[frame_ts_open] = 2;
+        frame_ts_open = -1;
+    }
+}
+static void frame_ts_after_present(void) {   /* (the next frame's start) */
+    if (!frame_ts_ready() || frame_ts_state[frame_ts_cur]) return;   /* (its set still in flight: this frame untimed) */
+    ID3D11DeviceContext_Begin(ctx, (ID3D11Asynchronous *)frame_ts[frame_ts_cur][0]);
+    ID3D11DeviceContext_End(ctx, (ID3D11Asynchronous *)frame_ts[frame_ts_cur][1]);
+    frame_ts_state[frame_ts_cur] = 1;
+    frame_ts_open = (int)frame_ts_cur;
+    frame_ts_cur = (frame_ts_cur + 1) % FRAME_TS;
+}
+
 /* ---- a lost device: Windows reset the GPU (some GPU work ran past its 2-second limit), or the
  * driver failed, restarted or was updated. Every object of the device is dead from then on and
  * nothing can be drawn again, so the game stops, saying why. (Before, a player's game stopped 98
@@ -7248,6 +7301,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
     ID3D11Texture2D_Release(back);
     gpu_timer_frame();
     gpu_times_frame();
+    frame_ts_before_present();
     LARGE_INTEGER p0, p1;
     QueryPerformanceCounter(&p0);
     static int gated;
@@ -7267,6 +7321,7 @@ void d3d11_present(u64 guest, u32 width, u32 height) {
 #endif
     QueryPerformanceCounter(&p1);
     gfx_stat_present_ticks += (u64)(p1.QuadPart - p0.QuadPart);
+    frame_ts_after_present();
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) check_device(hr, "showing a frame");
     leave();
 }

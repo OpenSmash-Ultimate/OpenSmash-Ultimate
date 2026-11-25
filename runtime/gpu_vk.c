@@ -433,6 +433,77 @@ static void gpu_time_read(Frame *f, double waited_ms) {
     }
 }
 
+/* The GPU's time per frame shown (display.h: gpu_frame_time_push; SSBU_GPU_TIMESTAMPS=0: off). Two timestamps a slot - its
+ * command buffer's first command and its last - in a pool of their own, on by default (SSBU_VK_GPU_TIME's is its
+ * measuring with thousands a frame). Read where cmd() has waited for the slot's fence anyway: no wait of their own, and
+ * not ready is skipped. A frame's work submitted in more than one part (flush_wait, a new swap chain) is summed, and
+ * handed over with its present's part. With VK_EXT_calibrated_timestamps (Windows: the performance counter's domain)
+ * its end is put on the CPU's clock too: how long after its submit, and after the refresh, the card finished. */
+static VkQueryPool ft_pool;
+static double ft_period;   /* (ns a tick) */
+static u64 ft_mask = ~0ull;   /* (the queue's timestampValidBits) */
+static u32 ft_bits = 64;
+static u8 ft_written[MAX_FRAMES], ft_present[MAX_FRAMES];
+static long long ft_submit_qpc[MAX_FRAMES];
+static double ft_sum[MAX_FRAMES];   /* (the slot's frame's parts so far: flush_wait's stay in the slot) */
+static PFN_vkGetCalibratedTimestampsEXT ft_calibrate;
+#ifdef _WIN32
+static u64 ft_cal_gpu;
+static long long ft_cal_qpc, ft_qpc_freq;
+static u32 ft_cal_age;
+#endif
+static void ft_begin(Frame *f) {
+    if (!ft_pool) return;
+    u32 slot = (u32)(f - frames);
+    vkCmdResetQueryPool(f->cmd, ft_pool, slot * 2, 2);
+    vkCmdWriteTimestamp(f->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, ft_pool, slot * 2);
+    ft_written[slot] = 1;
+    ft_present[slot] = 0;
+}
+static void ft_end(Frame *f) {   /* (submit: its last command) */
+    if (!ft_pool) return;
+    u32 slot = (u32)(f - frames);
+    if (ft_written[slot] != 1) return;
+    vkCmdWriteTimestamp(f->cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ft_pool, slot * 2 + 1);
+    ft_written[slot] = 2;
+#ifdef _WIN32
+    LARGE_INTEGER q; QueryPerformanceCounter(&q); ft_submit_qpc[slot] = q.QuadPart;
+#endif
+}
+static long long ft_end_qpc(u64 end) {   /* (the GPU's tick on the performance counter's clock; 0: not known) */
+#ifdef _WIN32
+    if (!ft_calibrate) return 0;
+    if (!ft_cal_qpc || ++ft_cal_age >= 60) {   /* (once a second or so: the two clocks drift apart slowly) */
+        VkCalibratedTimestampInfoEXT ci[2] = {{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL, VK_TIME_DOMAIN_DEVICE_EXT},
+                                              {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL, VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT}};
+        u64 ts[2], dev = 0;
+        if (ft_calibrate(device, 2, ci, ts, &dev) != VK_SUCCESS) { ft_calibrate = NULL; return 0; }
+        ft_cal_gpu = ts[0] & ft_mask; ft_cal_qpc = (long long)ts[1]; ft_cal_age = 0;
+        if (!ft_qpc_freq) { LARGE_INTEGER fq; QueryPerformanceFrequency(&fq); ft_qpc_freq = fq.QuadPart; }
+    }
+    long long d = (long long)(((end - ft_cal_gpu) & ft_mask) << (64 - ft_bits)) >> (64 - ft_bits);   /* (signed, in the valid bits) */
+    return ft_cal_qpc + (long long)((double)d * ft_period * (double)ft_qpc_freq / 1e9);
+#else
+    (void)end;
+    return 0;
+#endif
+}
+static void ft_read(Frame *f) {   /* (cmd(), the slot's fence waited for) */
+    if (!ft_pool) return;
+    u32 slot = (u32)(f - frames);
+    if (ft_written[slot] != 2) { ft_written[slot] = 0; return; }
+    ft_written[slot] = 0;
+    u64 r[4];   /* (begin, its availability, end, its availability) */
+    if (vkGetQueryPoolResults(device, ft_pool, slot * 2, 2, sizeof r, r, 2 * sizeof *r, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS ||
+        !r[1] || !r[3]) { ft_sum[slot] = 0; return; }   /* (the frame untimed) */
+    u64 t0 = r[0] & ft_mask, t1 = r[2] & ft_mask;
+    ft_sum[slot] += (double)((t1 - t0) & ft_mask) * ft_period / 1e6;
+    if (!ft_present[slot]) return;
+    gpu_frame_time_push(ft_sum[slot], ft_submit_qpc[slot], ft_end_qpc(t1));
+    ft_sum[slot] = 0;
+}
+static void ft_forget(Frame *f) { u32 slot = (u32)(f - frames); ft_written[slot] = 0; ft_sum[slot] = 0; }   /* (a part left behind in a slot: a new swap chain) */
+
 /* The frame's command buffer, begun the first time it is asked for (after the GPU is done with the
  * slot's previous work, whose graves, upload memory, views and descriptor sets are then taken back). */
 static VkCommandBuffer cmd(void) {
@@ -444,6 +515,7 @@ static VkCommandBuffer cmd(void) {
         vk_ns_wait += rt_clock_ns() - t0;
         f->submitted = 0;
         gpu_time_read(f, (rt_clock_ns() - t0) / 1e6);
+        ft_read(f);
     }
     for (u32 i = 0; i < f->nviews; i++) vkDestroyBufferView(device, f->views[i], NULL);
     f->nviews = 0;
@@ -465,6 +537,7 @@ static VkCommandBuffer cmd(void) {
     check(vkBeginCommandBuffer(f->cmd, &bi), "starting a frame's commands");
     f->recording = 1;
     gpu_time_begin(f);
+    ft_begin(f);
     return f->cmd;
 }
 
@@ -1219,6 +1292,7 @@ static void submit(VkSemaphore wait, VkSemaphore signal) {
     end_rendering();
     if (!f->recording) cmd();
     gpu_time_mark(f, f->cmd, 1);
+    ft_end(f);
     check(vkEndCommandBuffer(f->cmd), "ending a frame's commands");
     f->recording = 0;
     vkResetFences(device, 1, &f->done);
@@ -1265,7 +1339,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
     if (swapchain && wanted_mode() != present_mode) recreate = 1;
     if (recreate) {
         /* (the frame's work so far goes first: making a swap chain waits for the GPU) */
-        if (frames[frame_at].recording) { submit(VK_NULL_HANDLE, VK_NULL_HANDLE); frame_at = (frame_at + 1) % nframes; }
+        if (frames[frame_at].recording) { submit(VK_NULL_HANDLE, VK_NULL_HANDLE); ft_forget(&frames[frame_at]); frame_at = (frame_at + 1) % nframes; }
         make_swapchain();
     }
     Frame *f = &frames[frame_at];
@@ -1349,6 +1423,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
         }
         image_layout(c, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
         submit(f->acquired, swap_ready[index]);
+        if (ft_pool) ft_present[f - frames] = 1;
         VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &swap_ready[index], 1, &swapchain, &index, NULL};
         static int gated;
         if (!gated) {   /* (the first present: the warm start's pipelines made first, vk_warm_gate) */
@@ -1365,6 +1440,7 @@ static void vk_present_(u64 guest, u32 width, u32 height) {
     } else {
         vk_stat_presents_skipped++;
         submit(VK_NULL_HANDLE, VK_NULL_HANDLE);
+        if (ft_pool) ft_present[f - frames] = 1;
         if (!shown) display_show_window();   /* (a window with no size yet: shown, so it gets one) */
     }
     if (nshots) {
@@ -6334,6 +6410,13 @@ static const GfxBackend *start_undo(void) {
         if (pool) vkDestroyCommandPool(device, pool, NULL);   /* (and the frames' command buffers with it) */
         if (gpu_time_pool) vkDestroyQueryPool(device, gpu_time_pool, NULL);
         gpu_time_pool = VK_NULL_HANDLE;
+        if (ft_pool) vkDestroyQueryPool(device, ft_pool, NULL);
+        ft_pool = VK_NULL_HANDLE;
+        ft_calibrate = NULL;
+        memset(ft_written, 0, sizeof ft_written); memset(ft_present, 0, sizeof ft_present); memset(ft_sum, 0, sizeof ft_sum);
+#ifdef _WIN32
+        ft_cal_qpc = 0;
+#endif
         pool = VK_NULL_HANDLE;
         for (u32 i = 0; i < MAX_FRAMES; i++) {
             if (frames[i].done) vkDestroyFence(device, frames[i].done, NULL);
@@ -6586,14 +6669,24 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
         snprintf(why, size, "no shader translator for Vulkan: %s (and no vkd3d-shader in this build)", g);
         return start_undo();
     }
-    const char *want_ext[8] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
-    uint32_t nwant = 2;
+    const char *want_ext[10] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
+    uint32_t nwant = 2, timestamp_bits = 0;
     if (has_ext(dext, ndext, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME)) want_ext[nwant++] = VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME;
     if (has_ext(dext, ndext, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)) want_ext[nwant++] = VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME;
     if ((have_mirror_clamp = has_ext(dext, ndext, VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME)) != 0)
         want_ext[nwant++] = VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME;
     int float_controls = has_ext(dext, ndext, "VK_KHR_shader_float_controls");
     if (float_controls) want_ext[nwant++] = "VK_KHR_shader_float_controls";
+    /* (the GPU's time per frame: its end on the CPU's clock, ft_end_qpc) */
+    timestamp_bits = fams[queue_family].timestampValidBits;
+    const char *calibrated = NULL;
+#ifdef _WIN32
+    if (gpu_timestamps_on() && timestamp_bits) {
+        if (has_ext(dext, ndext, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) calibrated = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+        else if (has_ext(dext, ndext, "VK_KHR_calibrated_timestamps")) calibrated = "VK_KHR_calibrated_timestamps";
+    }
+#endif
+    if (calibrated) want_ext[nwant++] = calibrated;
     VkPhysicalDeviceFeatures have, enable;
     vkGetPhysicalDeviceFeatures(physical, &have);
     memset(&enable, 0, sizeof enable);
@@ -6621,6 +6714,20 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
 #define LOAD_D(name) vk##name = (PFN_vk##name)vkGetDeviceProcAddr(device, "vk" #name);
     VK_DEVICE_FUNCS(LOAD_D)
 #undef LOAD_D
+#ifdef _WIN32
+    if (calibrated) {   /* (the GPU's time per frame: the performance counter's domain, if the driver can put its clock on it) */
+        int ext = calibrated[3] == 'E';
+        PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT domains = (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)gipa(instance,
+            ext ? "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT" : "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR");
+        VkTimeDomainEXT dom[8];
+        uint32_t ndom = 8;
+        int dev_dom = 0, qpc_dom = 0;
+        if (domains && domains(physical, &ndom, dom) >= VK_SUCCESS)
+            for (uint32_t i = 0; i < ndom && i < 8; i++) { dev_dom |= dom[i] == VK_TIME_DOMAIN_DEVICE_EXT; qpc_dom |= dom[i] == VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT; }
+        if (dev_dom && qpc_dom)
+            ft_calibrate = (PFN_vkGetCalibratedTimestampsEXT)vkGetDeviceProcAddr(device, ext ? "vkGetCalibratedTimestampsEXT" : "vkGetCalibratedTimestampsKHR");
+    }
+#endif
     if (!vkCmdBeginRenderingKHR || !vkCmdEndRenderingKHR) { snprintf(why, size, "%s: the driver lacks vkCmdBeginRenderingKHR", card); return start_undo(); }
     vkGetDeviceQueue(device, queue_family, 0, &queue);
     limits = props.limits;
@@ -6663,6 +6770,15 @@ static const GfxBackend *start_backend(char *why, size_t size, int automatic) {
             snprintf(why, size, "%s: cannot make the frames' command buffers", card);
             return start_undo();
         }
+    }
+    if (gpu_timestamps_on() && timestamp_bits && limits.timestampPeriod > 0) {   /* (the GPU's time per frame, ft_begin) */
+        VkQueryPoolCreateInfo qi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, MAX_FRAMES * 2, 0};
+        if (vkCreateQueryPool(device, &qi, NULL, &ft_pool) != VK_SUCCESS) ft_pool = VK_NULL_HANDLE;
+        ft_period = limits.timestampPeriod;
+        ft_bits = timestamp_bits;
+        ft_mask = timestamp_bits >= 64 ? ~0ull : (1ull << timestamp_bits) - 1;
+        fprintf(stderr, "[vulkan] GPU time per frame: %s (%.2f ns a tick, %u bits)%s\n", ft_pool ? "timestamps on" : "no query pool", ft_period,
+                timestamp_bits, ft_calibrate ? ", its end on the performance counter's clock" : ", its end not on the CPU's clock");
     }
     if (gpu_time_ms != 0 && getenv("SSBU_VK_GPU_TIME") && limits.timestampPeriod > 0) {
         VkQueryPoolCreateInfo qi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, MAX_FRAMES * GPU_QS, 0};
