@@ -207,8 +207,10 @@ extern int rb_on;   /* (hle_rb_core.c) */
 static volatile int ready_grace;   /* (refreshes left after a vi_rb_load) */
 static LONG64 vi_ready_waited;   /* (the last refresh's wait for the card to finish drawing the oldest slot) */
 static int vi_ready_active(void) {
-    int rb_online_match_now(void), rb_net_fight_now(void);   /* (hle_rb_core.c) */
-    if (!rb_on || !rb_net_fight_now() || rb_online_match_now() > 0 || ready_on == 2) return 1;
+    int rb_online_match_now(void), rb_net_fight_now(void), game_fight_on(void);   /* (hle_rb_core.c, hle_latency.c) */
+    /* (offline: in a fight only - the flashbacks were there; menus, movies and loads queue a picture and may submit
+     * nothing after it for a while, and the wait would then show nothing new for up to 50 ms a refresh) */
+    if ((!rb_net_fight_now() && game_fight_on()) || rb_online_match_now() > 0 || ready_on == 2) return 1;
     if (ready_grace > 0) { ready_grace--; return 1; }
     return 0;
 }
@@ -425,7 +427,7 @@ static void show_fast(void) {
  * refresh that shows the frame. The refresh count the game reads is the same, so its logic does not
  * change. A frame that was released late and then missed its refresh (nothing queued, or the card
  * still drawing it) turns the delay off for a second. Not with SSBU_SPEED or in a rollback's catch-up. */
-static LONG64 ll_freq, ll_spans[64], ll_draw_spans[64], ll_prev_release, ll_release, ll_margin;
+static LONG64 ll_freq, ll_spans[64], ll_draw_spans[64], ll_draw_at[64], ll_prev_release, ll_release, ll_margin;
 static int ll_next, ll_count, ll_draw_next, ll_draw_count, ll_backoff, ll_delayed;
 static volatile LONG64 ll_late_frames, ll_delayed_frames, ll_delay_sum, ll_undrawn_frames;   /* (undrawn: of the late ones, a picture not drawn yet) */
 /* (kernel.c) the refreshes the game sees in a 60 Hz frame: display_tick_mult as the vsync thread last paced it, for
@@ -472,7 +474,11 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
     if (ll_backoff > 0) { ll_backoff--; return 0; }
     LONG64 most = 0;
     for (int i = 0; i < ll_count; i++) if (ll_spans[i] > most) most = ll_spans[i];
-    for (int i = 0; i < ll_draw_count; i++) if (ll_draw_spans[i] > most) most = ll_draw_spans[i];
+    {   /* (the draw spans of the last second only: a stall's span - a shader compile - would otherwise stay the maximum
+         * while no new sample comes, the game a picture or two ahead, and keep the hold off) */
+        LONG64 now = qpc_now();
+        for (int i = 0; i < ll_draw_count; i++) if (now - ll_draw_at[i] < ll_freq && ll_draw_spans[i] > most) most = ll_draw_spans[i];
+    }
     {   static LONG64 keep = -1;   /* (the rollbacks' spans: see ll_queued) */
         if (keep < 0) {
             const char *e = getenv("SSBU_LOW_LATENCY_RB_MS");
@@ -574,6 +580,7 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             i64 dq = gpu_queue_done_qpc(draw_mark);
             if (dq > ll_prev_release && dq - ll_prev_release < ll_freq) {
                 ll_draw_spans[ll_draw_next] = dq - ll_prev_release;
+                ll_draw_at[ll_draw_next] = dq;
                 ll_draw_next = (ll_draw_next + 1) % 64;
                 if (ll_draw_count < 64) ll_draw_count++;
             }
