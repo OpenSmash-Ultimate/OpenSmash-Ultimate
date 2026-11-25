@@ -524,6 +524,31 @@ static void ll_rb_kept(void) {   /* (QUEUE_BUFFER, under the queue's lock: a cat
     ll_rb_from = 0;
 }
 
+/* The margin adapts (unless SSBU_LOW_LATENCY_MARGIN sets it): every frame that missed its refresh with the signal held
+ * (late, or its picture not drawn yet: the three ll_backoff sites) adds 1 ms, up to 8; 30 s of frames held without a miss
+ * take 0.25 ms off, down to 2.5. A fast PC drifts to a later start (less input lag); a slow card or a heavy scene
+ * settles where it stops missing. Starts at 4 ms, the old fixed margin. */
+static int ll_margin_fixed = -1;
+static LONG64 ll_margin_since;   /* (qpc of the last miss or step down) */
+static long long ll_margin_ups, ll_margin_downs;
+static void ll_missed(void) {
+    if (ll_margin_fixed || !ll_freq) return;
+    LONG64 top = 8 * ll_freq / 1000;
+    if (ll_margin < top) { ll_margin += ll_freq / 1000; if (ll_margin > top) ll_margin = top; ll_margin_ups++; }
+    ll_margin_since = qpc_now();
+}
+static void ll_margin_step(void) {   /* (each refresh with the signal held) */
+    if (ll_margin_fixed || !ll_freq) return;
+    LONG64 now = qpc_now();
+    if (!ll_margin_since) { ll_margin_since = now; return; }
+    static LONG64 every = 0;   /* (SSBU_LOW_LATENCY_ADAPT_S: the quiet time before a step down, 30 s; shorter for tests) */
+    if (!every) { const char *e = getenv("SSBU_LOW_LATENCY_ADAPT_S"); double v = e && atof(e) > 0 ? atof(e) : 30.0; every = (LONG64)(v * ll_freq); }
+    if (now - ll_margin_since < every) return;
+    LONG64 floor = ll_freq * 5 / 2000;
+    if (ll_margin > floor) { ll_margin -= ll_freq / 4000; if (ll_margin < floor) ll_margin = floor; ll_margin_downs++; }
+    ll_margin_since = now;
+}
+
 static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
     if (!ll_freq) {
         LARGE_INTEGER f;
@@ -531,6 +556,7 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
         ll_freq = f.QuadPart;
         const char *m = getenv("SSBU_LOW_LATENCY_MARGIN");
         ll_margin = (LONG64)((m && atof(m) >= 0 ? atof(m) : 4.0) * ll_freq / 1000);
+        ll_margin_fixed = m && *m;
         if (display_low_latency()) fprintf(stderr, "[display] low_latency: the game starts each frame as late as it can (margin %.1f ms)\n", (double)ll_margin * 1000 / ll_freq);
     }
     if (!display_low_latency() || speed_mode || ll_count < 16) return 0;
@@ -553,6 +579,7 @@ static LONG64 ll_delay(void) {   /* ticks to hold the signal past the refresh */
         for (int i = 0; i < 16; i++) if (ll_rb_at[i] && now - ll_rb_at[i] < keep && ll_rb_spans[i] > most) most = ll_rb_spans[i];
         queue_unlock();
     }
+    ll_margin_step();
     LONG64 d = ll_freq / (60 * (LONG64)rt_refresh_mult) - most - ll_margin;   /* (a refresh's period: frame_rate's) */
     return d > ll_freq / 2000 ? d : 0;   /* (under half a millisecond: not worth it) */
 }
@@ -647,10 +674,10 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
                  * 72 ms against 32 with the hold off. Off for a second, as for a late frame; whatever SSBU_VI_READY says) */
                 int undrawn = ll_delayed && ready_on > 0 && !vi_slot_drawn(oldest);
                 show_held(hold);
-                if (ll_delayed && show_waited > ll_freq / 1000) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (the card was still drawing it) */
-                else if (undrawn) { ll_backoff = 60; ll_late_frames++; ll_undrawn_frames++; d = 0; }
+                if (ll_delayed && show_waited > ll_freq / 1000) { ll_backoff = 60; ll_late_frames++; ll_missed(); d = 0; }   /* (the card was still drawing it) */
+                else if (undrawn) { ll_backoff = 60; ll_late_frames++; ll_undrawn_frames++; ll_missed(); d = 0; }
             }
-        } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; d = 0; }   /* (released late, and not queued in time) */
+        } else if (!fast && ll_delayed) { ll_backoff = 60; ll_late_frames++; ll_missed(); d = 0; }   /* (released late, and not queued in time) */
         /* (d was worked out before the show: a miss seen now releases this refresh at once, as before) */
         ll_delayed = d > 0;
         if (d) { ll_wait_until(tick + d); ll_delayed_frames++; ll_delay_sum += d; }
@@ -660,6 +687,9 @@ static DWORD WINAPI vsync_thread(LPVOID unused) {
             if (ll_said) fprintf(stderr, "[display] low_latency: %lld frames started later than the refresh (%.1f ms on average), %lld missed it and turned it off for a second (%lld of them a picture not drawn yet)\n",
                                  (long long)ll_delayed_frames, ll_delayed_frames ? (double)ll_delay_sum * 1000 / ll_freq / (double)ll_delayed_frames : 0.0,
                                  (long long)ll_late_frames, (long long)ll_undrawn_frames);
+            if (ll_said && ll_freq)
+                fprintf(stderr, "[display] low_latency: margin %.2f ms (%s; %lld steps up, %lld down so far)\n", (double)ll_margin * 1000 / ll_freq,
+                        ll_margin_fixed ? "fixed by SSBU_LOW_LATENCY_MARGIN" : "adaptive", ll_margin_ups, ll_margin_downs);
             if (ll_said) gft_say();
             ll_said = GetTickCount64();
         }
