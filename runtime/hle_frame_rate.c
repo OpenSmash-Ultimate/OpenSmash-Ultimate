@@ -18,7 +18,8 @@
  * pad only in the passes that run a logic frame (measured 2026-11-24, plan/INPUT_LAG_2026-11-24.md 4: 0.50 / 0.25 reads a
  * pass at 120 / 240, all on the same phase), so input is still taken 60 times a second, as the logic that uses it. A
  * read in the other passes could not be used before the next logic frame anyway: frame_rate gives smoother pictures,
- * not less input delay (that is low_latency's and run-ahead's work).
+ * not less input delay (that is low_latency's and run-ahead's work). (The console mod is said to help Steve's NIL
+ * techniques at 240 - the owner's emulator tests - which a 60 Hz read would not explain: open, see plan/TODO.md.)
  *
  * Refreshes the game missed: the frame end reports them (FRAME_END's third argument: refreshes counted since the last
  * frame, less one), and in the scenes that allow it the game catches up with one extra logic frame for each. At 60 a
