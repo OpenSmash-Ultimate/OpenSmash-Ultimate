@@ -36,6 +36,7 @@ int gpu_threaded(void);                                   /* is there one (SSBU_
 void gpu_queue_submit(u32 channel, const u64 *entries, u32 count, u32 syncpoint, u32 fence);
 u64 gpu_queue_mark(void);                                 /* submissions queued so far */
 u64 gpu_queue_done_count(void);                           /* submissions run so far (SSBU_GPU_THREAD=0: ~0) */
+i64 gpu_queue_done_qpc(u64 mark);                           /* QPC timestamp when submission `mark` finished (0 if not done / no thread) */
 void gpu_queue_wait(u64 mark);                            /* until that many have run */
 u64 gpu_queue_draws(u64 mark);                            /* (SSBU_SEQ) draw calls run once they had */
 void gpu_queue_drain(void);                               /* until everything queued has run */
