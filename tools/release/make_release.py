@@ -15,7 +15,8 @@ the game, and the audit checks that every file of a release holds none of it eit
                                                                     DIST/opensmash-release.json and DIST/SHA256SUMS from the
                                                                     files in DIST (OpenSmash.exe, the Linux and macOS
                                                                     launchers OpenSmash-<os>-<arch>.tar.gz,
-                                                                    opensmash-runtime-*.zip)
+                                                                    opensmash-runtime-*.zip, RecompLauncher's
+                                                                    OpenSmash-vV-Windows-x64.zip: in SHA256SUMS only)
 
 The manifest is what the launcher reads (OpenSmash.Core/Releases.cs): the release's version and commit, every file
 with its SHA-256, the official lobby and the lowest online level it lets in (runtime/net.h NET_CLIENT_LEVEL).
@@ -40,6 +41,9 @@ SEMVER = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z]+(
 LAUNCHERS = {"OpenSmash.exe": "windows-x64", "OpenSmash-linux-x64.tar.gz": "linux-x64",
              "OpenSmash-macos-arm64.tar.gz": "macos-arm64", "OpenSmash-macos-x64.tar.gz": "macos-x64"}
 RUNTIME = re.compile(r"^opensmash-runtime-(windows|linux|macos)-([a-z0-9-]+)\.zip$")
+# RecompLauncher's package (tools/make_recomplauncher_zip.py): the project and OpenSmash.exe for RecompLauncher's installs.
+# Audited and in SHA256SUMS like the rest, not in the manifest (the launchers never read it); only the release's own version.
+RECOMPLAUNCHER = re.compile(r"^OpenSmash-v(.+)-Windows-x64\.zip$")
 
 
 def _audit_rules():
@@ -136,8 +140,11 @@ def manifest(dist, ver, commit, channel="stable", lobby=None, min_level=0):
         elif RUNTIME.match(name):
             os_, isa = RUNTIME.match(name).groups()
             m["runtime"][f"{os_}-{isa}"] = {"file": name, "sha256": digest}
+        elif RECOMPLAUNCHER.match(name):
+            if RECOMPLAUNCHER.match(name).group(1) != ver:
+                raise SystemExit(f"{name}: RecompLauncher's zip of another version (this release is {ver})")
         else:
-            raise SystemExit(f"{name}: not a file a release holds (the launchers, the runtime's zips)")
+            raise SystemExit(f"{name}: not a file a release holds (the launchers, the runtime's zips, RecompLauncher's zip)")
     if "windows-x64" not in m["launcher"]:
         raise SystemExit(f"{dist}: no launcher (OpenSmash.exe)")
     problems = audit([os.path.join(dist, n) for n in sorted(os.listdir(dist)) if os.path.isfile(os.path.join(dist, n))])
