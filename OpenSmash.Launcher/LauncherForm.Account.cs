@@ -129,28 +129,32 @@ namespace OpenSmash.Launcher
             return await _pass.WriteAsync() ? _pass.File : null;
         }
 
-        /// <summary>the game started (proc): the ticket kept fresh while it runs; at its end, a report it wrote is sent</summary>
+        /// <summary>what runs at the game's end (AccountWatchGame): the launcher waits for it before it closes</summary>
+        Task _afterGame = Task.CompletedTask;
+
+        /// <summary>the game started (proc): the ticket kept fresh while it runs; at its end, a report it wrote is sent.
+        /// Its end includes a game started again from its settings (GameFolder.Ended). proc's Exited came with the first
+        /// process's end: a restarted game's crash was looked for before it happened, a report already there went with
+        /// play.log cut at "[settings] starting the game again", and the restarted game's ticket was no longer renewed.</summary>
         void AccountWatchGame(System.Diagnostics.Process? proc)
         {
             _gameStartedUtc = DateTime.UtcNow;
             if (proc == null) return;
-            if (_pass != null && File.Exists(_pass.File)) _pass.KeepFresh();
-            try
+            var pass = _pass;
+            DateTime started = _gameStartedUtc;
+            if (pass != null && File.Exists(pass.File)) pass.KeepFresh();
+            _afterGame = Task.Run(async () =>
             {
-                proc.EnableRaisingEvents = true;
-                proc.Exited += (_, _) =>
-                {
-                    _pass?.Dispose();
-                    if (_account == null) return;
-                    bool on = true;
-                    on = !FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt"));
-                    _ = CrashReport.SendIfAnyAsync(_account, _repo, _gameStartedUtc, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
-                    // (the session's performance summary: aggregates only, signed in only; config\telemetry.txt "off" stops it)
-                    _ = PerfReport.SendIfAnyAsync(_account, _repo, _gameStartedUtc, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
-                    try { BeginInvoke(new Action(() => _ = AccountLoadGsp())); } catch (InvalidOperationException) { }   // (the GSP the game just earned)
-                };
-            }
-            catch { }
+                await GameFolder.Ended(proc);
+                pass?.Dispose();
+                if (_account == null) return;
+                bool on = !FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt"));
+                var crash = CrashReport.SendIfAnyAsync(_account, _repo, started, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
+                // (the session's performance summary: aggregates only, signed in only; config\telemetry.txt "off" stops it)
+                var perf = PerfReport.SendIfAnyAsync(_account, _repo, started, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
+                try { BeginInvoke(new Action(() => _ = AccountLoadGsp())); } catch (InvalidOperationException) { }   // (the GSP the game just earned)
+                try { await Task.WhenAll(crash, perf); } catch { }
+            });
         }
 
         bool ActivateAccountHit(string id)
