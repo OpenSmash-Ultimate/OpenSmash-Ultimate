@@ -97,6 +97,22 @@ class Release(unittest.TestCase):
         with self.assertRaises(SystemExit):
             M.manifest(self.dist, "v0.5.0", COMMIT)
 
+    def test_recomplauncher_zip(self):
+        """RecompLauncher's OpenSmash-vV-Windows-x64.zip: in SHA256SUMS and audited, not in the manifest; only this
+        version's (v0.5.1 had none, and RecompLauncher's update took the project out of the players' folders)"""
+        self.zip("OpenSmash-v0.5.1-Windows-x64.zip", {"OpenSmash.exe": b"MZ", "recomplauncher.json": b"{}",
+                                                      "tools/install_opensmash.ps1": b"#"})
+        m = M.manifest(self.dist, "v0.5.1", COMMIT)
+        self.assertNotIn("OpenSmash-v0.5.1-Windows-x64.zip", json.dumps(m))
+        with open(os.path.join(self.dist, "SHA256SUMS")) as f:
+            self.assertIn(M.sha256(os.path.join(self.dist, "OpenSmash-v0.5.1-Windows-x64.zip")) + "  OpenSmash-v0.5.1-Windows-x64.zip",
+                          f.read().splitlines())
+        with self.assertRaises(SystemExit):   # (another release's zip)
+            M.manifest(self.dist, "v0.5.2", COMMIT)
+        self.zip("OpenSmash-v0.5.1-Windows-x64.zip", {"OpenSmash.exe": b"MZ", "keys/prod.keys": b"x"})
+        with self.assertRaises(SystemExit):   # (audited inside like the runtime's zips)
+            M.manifest(self.dist, "v0.5.1", COMMIT)
+
     def test_audit_finds_game_data(self):
         self.zip("opensmash-runtime-windows-x86-64-v2.zip", {"main.nso": b"NSO0", "keys/prod.keys": b"x",
                                                            "a.txt": b"header_key = " + b"0" * 64})

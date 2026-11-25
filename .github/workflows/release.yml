@@ -4,6 +4,8 @@
 #   OpenSmash-macos-arm64.tar.gz,          tools/publish_avalonia.py), each built on its own system (a macOS program
 #   OpenSmash-macos-x64.tar.gz             must be signed there); tools/launcher_fetch.py installs it
 #   opensmash-runtime-windows-<isa>.zip    the prebuilt runtime (runtime-release.yml, the same commit)
+#   OpenSmash-vX.Y.Z-Windows-x64.zip       stable releases: RecompLauncher's package, the project with OpenSmash.exe
+#                                          (tools/make_recomplauncher_zip.py)
 #   opensmash-release.json, SHA256SUMS     what the launcher reads (tools/release/make_release.py): versions, SHA-256s,
 #                                          the official lobby, the lowest online level it lets in
 # Nothing in it comes from the game: the whole history is checked first (check_no_game_data.py) and every file of
@@ -146,6 +148,15 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: RecompLauncher's zip (stable releases)
+        # (RecompLauncher installs OpenSmash from OpenSmash-<tag>-Windows-x64.zip: the project and this OpenSmash.exe.
+        # A stable release without it is an update to OpenSmash.exe alone, which takes the project's files out of the
+        # players' folders - v0.5.1. The tag's commit is the one checked out: HEAD.)
+        run: |
+          case "${{ needs.check.outputs.version }}" in
+            *-*) echo "a pre-release: no RecompLauncher zip" ;;
+            *) python3 tools/make_recomplauncher_zip.py --tag "${{ needs.check.outputs.tag }}" --rev HEAD --exe dist/OpenSmash.exe --out dist ;;
+          esac
       - name: Manifest and audit
         run: |
           rm -f dist/*.sha256
