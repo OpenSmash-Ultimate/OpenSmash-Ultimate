@@ -576,7 +576,8 @@ static class Tests
         var serve = new Serve(); serve.Pages["/status.json"] = status; serve.Pages["/leaderboard.json"] = board;
         var up = await CommunityFeed.Fetch(new HttpClient(serve), CancellationToken.None);
         Check(up.Status?.Online == 5 && up.Board == board, "lobby up: both pages");
-        Check(CommunityFeed.Every == TimeSpan.FromSeconds(60), "asked again every 60 s");
+        Check(CommunityFeed.Every == TimeSpan.FromSeconds(60), "the lobby's own pages asked again every 60 s");
+        Check(OpenSmash.Core.CommunityPoll.Parse(null) == TimeSpan.FromMinutes(5), "the accounts service asked again every 5 minutes");
     }
 
     // (by hand: LAUNCHER_TEST_RENDER=<folder> draws the home page's column and the remap page off screen into PNGs)

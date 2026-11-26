@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import re
 import secrets
 import socket
@@ -411,6 +412,30 @@ def switch_on(name):
     return (os.environ.get(name) or "").strip().lower() not in ("0", "off", "false")
 
 
+# How often the accounts service (Supabase) is asked for what the page shows of everyone (the top mastery, SSBU Arena's
+# ranked board): at most every 5 minutes, with a random 0..30 s more so the launchers do not ask in the same second
+# (OpenSmash.Core/CommunityPoll.cs). OPENSMASH_COMMUNITY_POLL_S=<seconds> (30..3600, default 300); 60 is the old pace.
+POLL_DEFAULT_S, POLL_MIN_S, POLL_MAX_S, POLL_JITTER_S = 300, 30, 3600, 30
+
+
+def poll_seconds(value=None):
+    """The interval OPENSMASH_COMMUNITY_POLL_S gives (none or not a number: 300 s), within 30..3600."""
+    raw = os.environ.get("OPENSMASH_COMMUNITY_POLL_S") if value is None else value
+    try:
+        s = int(str(raw).strip())
+    except (TypeError, ValueError):
+        s = POLL_DEFAULT_S
+    if s <= 0:
+        s = POLL_DEFAULT_S
+    return max(POLL_MIN_S, min(POLL_MAX_S, s))
+
+
+def poll_next(interval=None, rnd=random.random):
+    """The wait before the accounts service is asked again: the interval and a random 0..30 s (none at 60 s or less)."""
+    interval = poll_seconds() if interval is None else interval
+    return interval if interval <= 60 else interval + POLL_JITTER_S * min(1.0, max(0.0, rnd()))
+
+
 def fighter_key(k):
     """A fighter key as the lobby sends it ("ui_chara_" cut), or "" when it is not one."""
     k = (k if isinstance(k, str) else "").strip().lower()
@@ -747,6 +772,7 @@ class Account:
         self.mastery_at = 0
         self.mastery_mine = None   # (mastery_view: the last answers kept while a lobby is down)
         self.mastery_top = None
+        self.top_next = 0   # (when the top mastery may be asked again: the accounts service, poll_next())
 
     def client_id(self):
         return app_id(self.program_dir)
@@ -793,8 +819,9 @@ class Account:
         return self.mine
 
     def mastery_view(self, me=mastery_me, board=mastery_board, service=service_board):
-        """What the page shows of the mastery points and the SSBU Arena card (asked again at most once a minute). The top
-        list: the accounts service's board, the lobbies' lists only when it fails."""
+        """What the page shows of the mastery points and the SSBU Arena card. The player's own points (the lobbies) are
+        asked again at most once a minute; the top list (the accounts service's board, the lobbies' lists only when it
+        fails) at most every 5 minutes (poll_seconds)."""
         out = {"on": switch_on("OPENSMASH_MASTERY_UI"), "arena_card": switch_on("OPENSMASH_ARENA_CARD"),
                "top_on": switch_on("OPENSMASH_TOP_MASTERY"), "arena_url": ARENA_DOWNLOAD}
         if not out["on"]:
@@ -803,11 +830,12 @@ class Account:
             self.mastery_at = time.time()
             got = me(self.root)
             self.mastery_mine = got if got is not None else self.mastery_mine
-            if out["top_on"]:
-                top = service(self.root)
-                if top is None:
-                    top = board(self.root)
-                self.mastery_top = top if top is not None else self.mastery_top
+        if out["top_on"] and time.time() >= self.top_next:
+            self.top_next = time.time() + poll_next()
+            top = service(self.root)
+            if top is None:
+                top = board(self.root)
+            self.mastery_top = top if top is not None else self.mastery_top
         mine = self.mastery_mine
         out.update({"ticket": stored_ticket(self.root) is not None, "available": mine is not None, "fighters": mine or [],
                     "total": sum(f["points"] for f in mine or []), "games": sum(f["games"] for f in mine or []),
@@ -815,13 +843,14 @@ class Account:
         return out
 
     def ranked_view(self, region=None, board=ranked_board):
-        """The Competitive page: SSBU Arena's ranked top 10 for a region (None: all), asked again at most every 30 s a region;
+        """The Competitive page: SSBU Arena's ranked top 10 for a region (None: all), asked again at most every 5 minutes a
+        region (the accounts service: poll_seconds);
         rows None while nothing answered (the last answer kept while the service is down)."""
         region = region if region in RANKED_REGIONS else None
         cache = self.__dict__.setdefault("ranked", {})
         at, rows = cache.get(region, (0, None))
         failed = False
-        if time.time() - at > 30:
+        if time.time() - at > poll_seconds() - 5:
             got = board(self.root, region)
             failed = got is None
             rows = got if got is not None else rows

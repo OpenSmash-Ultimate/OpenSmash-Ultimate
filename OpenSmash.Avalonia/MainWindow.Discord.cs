@@ -7,16 +7,19 @@ namespace OpenSmash;
 
 // The home page's right column and the Discord account (main's LauncherForm.Community.cs / LauncherForm.Discord.cs):
 // sign-in through the browser (DiscordAccount.SignIn, config/discord_token.txt shared with the game), sign out, the
-// leaderboard name choice sent to every lobby, the lobby's status and top 10 asked every minute (CommunityFeed), and
-// the launcher's own Rich Presence "In the launcher" (DiscordPresence, Windows only: the SDK library is fetched there
-// alone), stopped while the game runs. Painted by Visuals/CommunityArtwork.cs from Surface.Community.
+// leaderboard name choice sent to every lobby, the lobby's status and top 10 asked every minute (CommunityFeed), the
+// accounts service's top mastery and COMPETITIVE board at most every 5 minutes and only while the window is shown
+// (OpenSmash.Core.CommunityPoll, OPENSMASH_COMMUNITY_POLL_S), and the launcher's own Rich Presence "In the launcher"
+// (DiscordPresence, Windows only: the SDK library is fetched there alone), stopped while the game runs. Painted by
+// Visuals/CommunityArtwork.cs from Surface.Community.
 public sealed partial class MainWindow
 {
-    DispatcherTimer? _communityTimer, _presenceTimer;
+    DispatcherTimer? _communityTimer, _presenceTimer, _serviceTimer;
     DiscordPresence? _presence;
     CancellationTokenSource? _discordCancel;
-    bool _communityOn, _communityBusy;
+    bool _communityOn, _communityBusy, _serviceBusy, _shownHooked;
     string? _communityRoot;
+    DateTime _serviceAt = DateTime.MinValue;   // (the accounts service last asked)
 
     void CommunityStart()
     {
@@ -31,6 +34,20 @@ public sealed partial class MainWindow
             _communityTimer = new DispatcherTimer { Interval = CommunityFeed.Every };
             _communityTimer.Tick += (_, _) => _ = CommunityRefresh();
             _communityTimer.Start();
+        }
+        if (_serviceTimer == null)
+        {
+            _serviceTimer = new DispatcherTimer { Interval = CommunityPoll.Next() };
+            _serviceTimer.Tick += (_, _) => { if (CommunityShown) _ = ServiceRefresh(); };   // (hidden: asked when shown again)
+            _serviceTimer.Start();
+        }
+        if (!_shownHooked)
+        {
+            _shownHooked = true;
+            PropertyChanged += (_, e) =>
+            {
+                if (e.Property == WindowStateProperty || e.Property == IsVisibleProperty) CommunityShownAgain();
+            };
         }
         if (_project != null && _project.Root != _communityRoot)
         {
@@ -53,6 +70,7 @@ public sealed partial class MainWindow
             if (region) _ = RegionMeasure(_communityRoot);
         }
         _ = CommunityRefresh();
+        _ = ServiceRefresh();   // (the first load, at once)
         PresenceStart();
     }
 
@@ -61,12 +79,24 @@ public sealed partial class MainWindow
         if (discord) await DiscordRefresh(root);
         if (region) await RegionMeasure(root);
         await CommunityRefresh();
+        await ServiceRefresh();
+    }
+
+    // the window is on screen: not minimized, not hidden (while the game runs)
+    bool CommunityShown => IsVisible && WindowState != Avalonia.Controls.WindowState.Minimized;
+
+    // shown again: the accounts service asked at once when its last answer is older than the interval
+    void CommunityShownAgain()
+    {
+        if (!_communityOn || _serviceTimer == null || !CommunityShown) return;
+        if (CommunityPoll.Due(_serviceAt, DateTime.UtcNow, CommunityPoll.Interval)) _ = ServiceRefresh();
     }
 
     void CommunityStop()
     {
         _communityOn = false;
         _communityTimer?.Stop(); _communityTimer = null;
+        _serviceTimer?.Stop(); _serviceTimer = null;
         _discordCancel?.Cancel();
         PresenceStop();
     }
@@ -77,13 +107,10 @@ public sealed partial class MainWindow
         _communityBusy = true;
         try
         {
-            // (mastery: the top mastery from the accounts service's board, the official lobbies' lists only when it fails;
-            // and Arena's launcher when installed)
+            // (mastery: Arena's launcher when installed; the top mastery is the accounts service's, ServiceRefresh)
             var c0 = Surface.Community;
-            var top = Mastery.UiOn && Mastery.TopOn && _project != null ? Mastery.TopAsync(_account, Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
             if (Mastery.UiOn && Mastery.ArenaCardOn) c0.ArenaExe = await Task.Run(() => ArenaEdition.Find());
             var (status, board) = await CommunityFeed.Fetch(Http, CancellationToken.None, _project?.Root);
-            if (top != null) { c0.TopMastery = await top ?? c0.TopMastery; c0.TopMasteryAsked = true; }
             var account = Surface.Community.Account;
             // (v0.5.0: an account's row is the id the lobby gave with the ticket; a Discord token's is its account hash)
             string mine = AccountMode ? Surface.Community.BoardId ?? "" : account?.UserId is { Length: > 0 } id ? DiscordAccount.AccountHash(id) : "";
@@ -91,7 +118,26 @@ public sealed partial class MainWindow
         }
         finally { _communityBusy = false; }
         Surface.InvalidateVisual();
-        if (Surface.CurrentView == "competitive") await RankedRefresh();   // (asked again every minute while shown)
+    }
+
+    // The accounts service's part (OpenSmash.Core.CommunityPoll): the top mastery (its board, the official lobbies'
+    // lists only when it fails) and the COMPETITIVE page's board while it is shown. At start, then every 5 minutes while
+    // the window is shown.
+    async Task ServiceRefresh()
+    {
+        if (_serviceBusy || !_communityOn) return;
+        _serviceBusy = true;
+        _serviceAt = DateTime.UtcNow;
+        if (_serviceTimer != null) { _serviceTimer.Stop(); _serviceTimer.Interval = CommunityPoll.Next(); _serviceTimer.Start(); }   // (the next one an interval from now)
+        try
+        {
+            var c0 = Surface.Community;
+            var top = Mastery.UiOn && Mastery.TopOn && _project != null ? Mastery.TopAsync(_account, Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
+            if (top != null) { c0.TopMastery = await top ?? c0.TopMastery; c0.TopMasteryAsked = true; }
+        }
+        finally { _serviceBusy = false; }
+        Surface.InvalidateVisual();
+        if (Surface.CurrentView == "competitive") await RankedRefresh();   // (asked again with the rest while shown)
     }
 
     // The COMPETITIVE page's board (Visuals/CompetitiveArtwork.cs): SSBU Arena's ranked top 10 for the region picked there.
@@ -100,7 +146,7 @@ public sealed partial class MainWindow
     async Task RankedRefresh(bool force = false)
     {
         var c = Surface.Community;
-        if (_rankedBusy || (!force && c.RankedAsked && DateTime.UtcNow - _rankedAt < TimeSpan.FromSeconds(55))) return;
+        if (_rankedBusy || (!force && c.RankedAsked && CommunityPoll.Fresh(_rankedAt, DateTime.UtcNow, CommunityPoll.Interval))) return;   // (the accounts service: at most every 5 minutes)
         _rankedBusy = true;
         try
         {

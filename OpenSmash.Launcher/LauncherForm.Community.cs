@@ -13,8 +13,11 @@ namespace OpenSmash.Launcher
 {
     // The home page's right column: the player's Discord account (sign in, or their name, avatar, GSP and position),
     // the lobby's players online now and open rooms, and the GSP leaderboard's top 10 with a link to the site's page
-    // (CommunityFeed.cs). Asked again every minute; a lobby that does not answer shows as offline, the last numbers
-    // kept. And the launcher's own Discord Rich Presence, "In the launcher" (DiscordPresence.cs).
+    // (CommunityFeed.cs). The lobby's own pages are asked again every minute; a lobby that does not answer shows as
+    // offline, the last numbers kept. What comes from the accounts service (the top mastery, the region's players
+    // online, the COMPETITIVE board) is asked at most every 5 minutes and only while the window is shown
+    // (OpenSmash.Core.CommunityPoll, OPENSMASH_COMMUNITY_POLL_S). And the launcher's own Discord Rich Presence,
+    // "In the launcher" (DiscordPresence.cs).
     // (mastery, OpenSmash.Core/Mastery.cs) The GSP becomes mastery points: the account's total in place of its GSP and
     // place, and a "SSBU Arena · Competitive" card (Arena's launcher when installed, else its download page) with the
     // top mastery in place of the GSP leaderboard. OPENSMASH_MASTERY_UI=0: the GSP views as before.
@@ -25,9 +28,15 @@ namespace OpenSmash.Launcher
         BoardRow? _mine;
         int _ranked;
         bool _lobbyAsked, _lobbyDown;
-        System.Windows.Forms.Timer? _communityTimer, _presenceTimer;
+        System.Windows.Forms.Timer? _communityTimer, _presenceTimer, _serviceTimer;
         DiscordPresence? _presence;
-        int _communityBusy;
+        int _communityBusy, _serviceBusy;
+        // (the accounts service's part: when it was last asked, the region's count it gave, and the lobby's own last
+        // status page; LobbyCompose puts the two together)
+        DateTime _serviceAt = DateTime.MinValue;
+        (int Players, int Rooms)? _count;
+        LobbyStatus? _lobbyPage;
+        bool _lobbyPageUp, _shownHooked;
         // the leaderboard rows' Discord profile pictures by URL: null while asked or when it could not be had (initials)
         readonly Dictionary<string, Image?> _boardAvatars = new();
         // (mastery) the home's "SSBU Arena · Competitive" card in place of the GSP leaderboard: Arena's launcher when it is
@@ -42,10 +51,32 @@ namespace OpenSmash.Launcher
             RegionView();
             _ = RegionMeasure();   // (in the background: the launcher does not wait for it)
             _ = CommunityRefresh();
+            _ = ServiceRefresh();   // (the first load, at once)
             _communityTimer = new System.Windows.Forms.Timer { Interval = (int)CommunityFeed.Every.TotalMilliseconds };
             _communityTimer.Tick += (_, _) => _ = CommunityRefresh();
             _communityTimer.Start();
+            _serviceTimer = new System.Windows.Forms.Timer { Interval = ServiceWaitMs() };
+            _serviceTimer.Tick += (_, _) => { if (CommunityShown) _ = ServiceRefresh(); };   // (hidden: asked when shown again)
+            _serviceTimer.Start();
+            if (!_shownHooked)
+            {
+                _shownHooked = true;
+                VisibleChanged += (_, _) => CommunityShownAgain();
+                Resize += (_, _) => CommunityShownAgain();   // (minimized and restored)
+            }
             PresenceStart();
+        }
+
+        static int ServiceWaitMs() => (int)Math.Clamp(OpenSmash.Core.CommunityPoll.Next().TotalMilliseconds, 1000, int.MaxValue);
+
+        // the window is on screen: not minimized, not hidden (while the game runs)
+        bool CommunityShown => Visible && WindowState != FormWindowState.Minimized;
+
+        // shown again: the accounts service asked at once when its last answer is older than the interval
+        void CommunityShownAgain()
+        {
+            if (_serviceTimer == null || !CommunityShown) return;
+            if (OpenSmash.Core.CommunityPoll.Due(_serviceAt, DateTime.UtcNow, OpenSmash.Core.CommunityPoll.Interval)) _ = ServiceRefresh();
         }
 
         // The server region (OpenSmash.Core.ServerRegion). With Auto, every region's lobby is asked at each launcher start
@@ -85,10 +116,14 @@ namespace OpenSmash.Launcher
 
         async Task CommunityAgain()
         {
-            for (int i = 0; i < 100 && Volatile.Read(ref _communityBusy) == 1; i++) await Task.Delay(100);   // (an answer on its way is the old lobby's)
+            for (int i = 0; i < 100 && (Volatile.Read(ref _communityBusy) == 1 || Volatile.Read(ref _serviceBusy) == 1); i++)
+                await Task.Delay(100);   // (an answer on its way is the old lobby's)
             _lobby = null;
+            _lobbyPage = null;
+            _lobbyPageUp = false;
+            _count = null;
             _lobbyAsked = false;
-            await CommunityRefresh();
+            await Task.WhenAll(CommunityRefresh(), ServiceRefresh());   // (another region: its numbers at once)
         }
 
         // The selected (or Auto's) region's players online from the accounts service (OpenSmash.Core.OnlineCount), or
@@ -114,30 +149,17 @@ namespace OpenSmash.Launcher
             catch (Exception e) when (e is OpenSmash.Core.AccountException or System.Net.Http.HttpRequestException or TaskCanceledException or InvalidOperationException or System.IO.IOException) { return null; }
         }
 
+        // The lobby's own pages (status.json, leaderboard.json), every minute: not the accounts service.
         async Task CommunityRefresh()
         {
             if (Interlocked.Exchange(ref _communityBusy, 1) == 1) return;
             try
             {
-                var counted = RegionCount();   // (asked together with the lobby's own pages)
-                bool mastery = OpenSmash.Core.Mastery.UiOn;
-                // (the top mastery: the accounts service's board, the lobbies' lists only when it fails)
-                var top = mastery && OpenSmash.Core.Mastery.TopOn
-                    ? OpenSmash.Core.Mastery.TopAsync(_account, _httpClient, OpenSmash.Core.OfficialLobby.All(_repo), CancellationToken.None, 5) : null;
                 var (status, board) = await CommunityFeed.Fetch(_httpClient, CancellationToken.None, _repo);
-                var count = await counted;
-                if (top != null) { _topMastery = await top ?? _topMastery; _topMasteryAsked = true; }
                 _lobbyAsked = true;
-                _lobbyDown = status == null && board == null && count == null;
-                if (status != null) _lobby = status;
-                // (the region's row of the accounts service's lobby_status, when it has one that is fresh: its players
-                // are the count shown; the open rooms stay the lobby's own when it answered. No row: as before.)
-                if (count is { } c)
-                    _lobby = new LobbyStatus
-                    {
-                        Online = c.Players, OpenRooms = status?.OpenRooms ?? c.Rooms, Rooms = status?.Rooms ?? c.Rooms,
-                        Arenas = status?.Arenas ?? 0, Playing = status?.Playing ?? 0, Ranked = status?.Ranked ?? 0,
-                    };
+                _lobbyPage = status;
+                _lobbyPageUp = status != null || board != null;
+                LobbyCompose();
                 if (board != null && CommunityFeed.ParseBoard(board) is { } parsed)
                 {
                     _top = parsed.Top;
@@ -151,7 +173,46 @@ namespace OpenSmash.Launcher
             catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { }
             finally { Interlocked.Exchange(ref _communityBusy, 0); }
             if (_view == "home") Invalidate();
-            if (_view == "competitive") _ = RankedRefresh();   // (the COMPETITIVE page's board, asked again every minute while shown)
+        }
+
+        // The accounts service's part (OpenSmash.Core.CommunityPoll): the region's players online and the top mastery,
+        // and the COMPETITIVE page's board while it is shown. At start, then every 5 minutes while the window is shown.
+        async Task ServiceRefresh()
+        {
+            if (Interlocked.Exchange(ref _serviceBusy, 1) == 1) return;
+            _serviceAt = DateTime.UtcNow;
+            if (_serviceTimer != null) { _serviceTimer.Stop(); _serviceTimer.Interval = ServiceWaitMs(); _serviceTimer.Start(); }   // (the next one an interval from now)
+            try
+            {
+                var counted = RegionCount();
+                bool mastery = OpenSmash.Core.Mastery.UiOn;
+                // (the top mastery: the accounts service's board, the lobbies' lists only when it fails)
+                var top = mastery && OpenSmash.Core.Mastery.TopOn
+                    ? OpenSmash.Core.Mastery.TopAsync(_account, _httpClient, OpenSmash.Core.OfficialLobby.All(_repo), CancellationToken.None, 5) : null;
+                _count = await counted;
+                if (_count != null) _lobbyAsked = true;
+                LobbyCompose();
+                if (top != null) { _topMastery = await top ?? _topMastery; _topMasteryAsked = true; }
+            }
+            catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { }
+            finally { Interlocked.Exchange(ref _serviceBusy, 0); }
+            if (_view == "home") Invalidate();
+            if (_view == "competitive") _ = RankedRefresh();   // (the COMPETITIVE page's board, asked again with the rest while shown)
+        }
+
+        // The players online shown: the region's row of the accounts service's lobby_status, when it has one that is
+        // fresh (the open rooms stay the lobby's own when it answered); else the lobby's own status page, as before.
+        void LobbyCompose()
+        {
+            _lobbyDown = !_lobbyPageUp && _count == null;
+            var status = _lobbyPage;
+            if (_count is { } c)
+                _lobby = new LobbyStatus
+                {
+                    Online = c.Players, OpenRooms = status?.OpenRooms ?? c.Rooms, Rooms = status?.Rooms ?? c.Rooms,
+                    Arenas = status?.Arenas ?? 0, Playing = status?.Playing ?? 0, Ranked = status?.Ranked ?? 0,
+                };
+            else if (status != null) _lobby = status;
         }
 
         // The top rows' profile pictures, each URL asked once (a failed one stays initials until the launcher restarts).
@@ -208,6 +269,9 @@ namespace OpenSmash.Launcher
             _communityTimer?.Stop();
             _communityTimer?.Dispose();
             _communityTimer = null;
+            _serviceTimer?.Stop();
+            _serviceTimer?.Dispose();
+            _serviceTimer = null;
             PresenceStop();
         }
 

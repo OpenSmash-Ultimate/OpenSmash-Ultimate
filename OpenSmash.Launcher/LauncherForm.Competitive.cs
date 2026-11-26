@@ -34,7 +34,7 @@ namespace OpenSmash.Launcher
 
         async Task RankedRefresh(bool force = false)
         {
-            if (!force && _rankedAsked && DateTime.UtcNow - _rankedAt < TimeSpan.FromSeconds(55)) return;
+            if (!force && _rankedAsked && CommunityPoll.Fresh(_rankedAt, DateTime.UtcNow, CommunityPoll.Interval)) return;   // (the accounts service: at most every 5 minutes)
             if (Interlocked.Exchange(ref _rankedBusy, 1) == 1) return;
             try
             {
@@ -206,7 +206,7 @@ namespace OpenSmash.Launcher
                     Theme.Label(g, "Loading...", FB(15 * s), A(Theme.Muted), x, top + 26 * s, 22 * s);
                 else
                 {
-                    // (quietly: an empty board today, or no answer - asked again in a minute)
+                    // (quietly: an empty board today, or no answer - asked again in a few minutes)
                     string big = _rankedFailed ? "NOT AVAILABLE NOW." : "NO RANKED RESULTS YET.";
                     var path = TextPath(big, 40 * s);
                     var b = path.GetBounds();
@@ -214,7 +214,7 @@ namespace OpenSmash.Launcher
                     g.TranslateTransform(x, top + 30 * s - b.Top);
                     using (var pen = new Pen(A(Theme.Dim), Math.Max(1, 1.5f * s))) g.DrawPath(pen, path);
                     g.Restore(ps);
-                    Theme.Label(g, _rankedFailed ? "The ranked board could not be read. It is asked again in a minute."
+                    Theme.Label(g, _rankedFailed ? "The ranked board could not be read. It is asked again in a few minutes."
                                                  : "Ranked 1v1 has just started. Players show here after their placement games in SSBU Arena.",
                         FB(15 * s), A(Theme.Muted), x, top + 30 * s + b.Height + 14 * s, 22 * s);
                 }
