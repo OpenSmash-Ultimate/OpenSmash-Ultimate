@@ -1509,17 +1509,86 @@ static inline u64 gpu_va_contig(u64 va, u64 size) {
     return gpu_va_to_guest(va + size - 1) == g + size - 1 ? g : 0;
 }
 
-/* Copy guest GPU memory [va, va + size) into dst (zeros where unmapped), as gpu_d3d11.c's read_gpu. */
+/* ---- guest memory that is gone ------------------------------------------------------------------------
+ * A GPU address can still map guest memory the game has given back (svc UnmapPhysicalMemory decommits it;
+ * hle_nv.c's gpu_memory_unmapping drains the queue only when the memory held a live nvmap allocation). NVN
+ * binds 64 KB for a program's constants and a binding often runs past what the game still has there: the
+ * shader never reads that part, but the copies below take all of it, and the read of a decommitted page
+ * ended the game on the gpu thread (0.5.1's crash reports: memcpy from upload / read_gpu, "reading address
+ * 0x60........", "the page is reserved, not committed"). So every read of guest memory for an upload is
+ * guarded: a page that is gone reads as zeros, as an unmapped one does. A page found gone is remembered for
+ * the rest of the submission (each thread its own list), so a binding drawn again and again faults once a
+ * submission, not at every draw. */
+extern __declspec(thread) int rt_probing;   /* (host.c: the crash handler leaves a fault to us) */
+static __declspec(noinline) void guest_copy_raw(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }
+static __declspec(noinline) int guest_cmp_raw(const void *a, const void *b, size_t n) { return memcmp(a, b, n); }
+static u64 vk_stat_gone_reads;   /* (reads that found guest memory gone: the status lines) */
+static _Thread_local struct { u64 batch, fault; u32 n; uintptr_t page[32]; } gone;   /* (host pages found gone in submission `batch`) */
+
+static int gone_filter(EXCEPTION_POINTERS *e) {
+    EXCEPTION_RECORD *r = e->ExceptionRecord;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    gone.fault = r->NumberParameters >= 2 ? (u64)r->ExceptionInformation[1] : 0;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+static void gone_fresh(void) {
+    if (gone.batch != gpu_stat_batches) { gone.batch = gpu_stat_batches; gone.n = 0; }
+}
+static void gone_note(void) {
+    if (++vk_stat_gone_reads <= 3)
+        fprintf(stderr, "[vulkan] a GPU binding reaches guest memory the game gave back (host %#llx): read as zeros (%llu so far)\n",
+                (unsigned long long)gone.fault, (unsigned long long)vk_stat_gone_reads);
+    gone_fresh();
+    if (gone.fault && gone.n < sizeof gone.page / sizeof *gone.page) gone.page[gone.n++] = (uintptr_t)gone.fault >> 12;
+}
+/* Whether host memory [p, p + n) holds a page found gone in this submission. */
+static int gone_in(const void *p, size_t n) {
+    if (gone.batch != gpu_stat_batches || !gone.n || !n) return 0;
+    uintptr_t lo = (uintptr_t)p >> 12, hi = ((uintptr_t)p + n - 1) >> 12;
+    for (u32 i = 0; i < gone.n; i++)
+        if (gone.page[i] >= lo && gone.page[i] <= hi) return 1;
+    return 0;
+}
+/* n bytes of guest memory at host address src into dst: 0 (dst partly written) if any of it is gone. */
+static int guest_read(void *dst, const void *src, size_t n) {
+    volatile int ok = 1;
+    int was = rt_probing;
+    rt_probing = 1;
+    __try {
+        guest_copy_raw(dst, src, n);   /* (a call of its own: a fault inside __try is only caught reliably in a callee) */
+    } __except (gone_filter(GetExceptionInformation())) {
+        ok = 0;
+    }
+    rt_probing = was;
+    if (!ok) gone_note();
+    return ok;
+}
+/* Whether a (a host copy) holds the n bytes of guest memory at src: 0 if they differ or some are gone. */
+static int guest_same(const void *a, const void *src, size_t n) {
+    if (gone_in(src, n)) return 0;
+    volatile int same = 0, ok = 1;
+    int was = rt_probing;
+    rt_probing = 1;
+    __try {
+        same = !guest_cmp_raw(a, src, n);
+    } __except (gone_filter(GetExceptionInformation())) {
+        ok = 0;
+    }
+    rt_probing = was;
+    if (!ok) { gone_note(); return 0; }
+    return same;
+}
+
+/* Copy guest GPU memory [va, va + size) into dst (zeros where unmapped or gone), as gpu_d3d11.c's read_gpu. */
 static void read_gpu(u64 va, u32 size, void *dst) {
     if (!size) return;
     u64 g = gpu_va_contig(va, size);
-    if (g) { memcpy(dst, P(void, g), size); return; }
-    for (u32 done = 0; done < size;) {
+    if (g && !gone_in(P(void, g), size) && guest_read(dst, P(void, g), size)) return;
+    for (u32 done = 0; done < size;) {   /* (page by page: not one mapping, or some of it gone) */
         u32 n = 0x1000 - (u32)((va + done) & 0xFFF);
         if (n > size - done) n = size - done;
         u64 p = gpu_va_to_guest(va + done);
-        if (p) memcpy((u8 *)dst + done, P(void, p), n);
-        else memset((u8 *)dst + done, 0, n);
+        if (!p || gone_in(P(void, p), n) || !guest_read((u8 *)dst + done, P(void, p), n)) memset((u8 *)dst + done, 0, n);
         done += n;
     }
 }
@@ -1625,7 +1694,7 @@ static void kept_written(u64 lo, u64 hi) {
 static VkBufferView kept_cb(u64 va, u32 size) {
     if (size < 0x1000) return VK_NULL_HANDLE;
     u64 g = gpu_va_contig(va, size);
-    if (!g || !watched(g, size)) return VK_NULL_HANDLE;
+    if (!g || !watched(g, size) || gone_in(P(void, g), size)) return VK_NULL_HANDLE;
     Kept *set = &kept[((va >> 4) * 0x9E3779B97F4A7C15ull >> 54) * KEPT_WAYS], *e = NULL, *lru = &set[0];
     for (u32 w = 0; w < KEPT_WAYS && !e; w++) {
         if (set[w].va == va && set[w].size == size && set[w].guest == g) e = &set[w];
@@ -1635,7 +1704,7 @@ static VkBufferView kept_cb(u64 va, u32 size) {
         e->checked = gpu_stat_batches;
         if (watch_written(g, size, &e->seen)) e->stale = 1;
     }
-    if (e && e->buf && e->stale && e->shadow && !memcmp(e->shadow, P(void, g), size)) e->stale = 0;   /* written, but the same bytes */
+    if (e && e->buf && e->stale && e->shadow && guest_same(e->shadow, P(void, g), size)) e->stale = 0;   /* written, but the same bytes */
     if (e && e->buf && !e->stale) { e->used = ++tick; vk_stat_kept_hits++; return e->view; }
     if (e && e->buf) {   /* changed */
         vk_stat_kept_stale++;
@@ -1658,8 +1727,17 @@ static VkBufferView kept_cb(u64 va, u32 size) {
     }
     e->va = va; e->guest = g; e->size = size; e->stale = 0; e->checked = gpu_stat_batches; e->made = gfx_stat_presented; e->used = ++tick;
     watch_written(g, size, &e->seen);   /* (before reading: a write meanwhile is news next time) */
-    if ((e->shadow = malloc(size)) != NULL) memcpy(e->shadow, P(void, g), size);   /* (then the buffer from the copy: the same bytes) */
-    memcpy(mem.ptr, e->shadow ? e->shadow : P(u8, g), size);
+    e->shadow = malloc(size);   /* (then the buffer from the copy: the same bytes) */
+    if (!guest_read(e->shadow ? (void *)e->shadow : (void *)mem.ptr, P(void, g), size)) {
+        /* (some of it is gone: not kept, and not tried again for a while - upload's copy reads zeros there) */
+        free(e->shadow);
+        e->shadow = NULL;
+        dev_free(&mem);
+        vkDestroyBuffer(device, buf, NULL);
+        e->paused_to = gfx_stat_presented + KEPT_PAUSE;
+        return VK_NULL_HANDLE;
+    }
+    if (e->shadow) memcpy(mem.ptr, e->shadow, size);
     if (bytes > size) memset(mem.ptr + size, 0, bytes - size);
     VkBufferViewCreateInfo vci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, buf, VK_FORMAT_R32_UINT, 0, bytes};
     VkBufferView view;
@@ -1721,8 +1799,8 @@ static VkBufferView upload(u64 va, u32 size) {
     VkDeviceSize off;
     u8 *dst = arena(padded, texel_align, &buf, &off);
     if (!dst) return upload_lost(padded, "no upload memory left this frame");
-    if (src) memcpy(dst, src, size);
-    else read_gpu(va, size, dst);
+    read_gpu(va, size, dst);   /* (one copy where it maps in one piece; page by page, zeros where gone, if not) */
+    if (src && gone_in(src, size)) src = NULL;   /* (some of it gone: not reused) */
     if (padded > size) memset(dst + size, 0, padded - size);
     vk_stat_upload_bytes += padded;
     VkBufferView v = arena_view(buf, off, padded);
@@ -2079,6 +2157,7 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
             if (gpu_va_to_guest(va + o)) run = 0;   /* (mapped elsewhere: not compared) */
     }
     const u8 *src = run ? P(const u8, g) : NULL;
+    if (src && gone_in(src, run)) src = NULL;   /* (some of it gone this submission: uploaded, zeros there, not compared) */
     u64 gen = 0;
     int have_gen = 0;
     if (src && l->view && l->va == va && l->size == size && l->run == run && l->serial == frames[frame_at].serial) {
@@ -2086,13 +2165,13 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
          * as upload() takes them - not compared again) */
         if (l->batch == gpu_stat_batches && memo_on() &&
             (unwritten_since(l->wseq, g, run) || ((have_gen = 1, gen = writes_over(g, run)) == l->gen))) {
-            if (memo_on() == 2) { vk_stat_memo_checked++; if (memcmp(l->copy, src, run)) vk_stat_memo_wrong[0]++; }
+            if (memo_on() == 2) { vk_stat_memo_checked++; if (!guest_same(l->copy, src, run)) vk_stat_memo_wrong[0]++; }
             l->wseq = write_seq;
             vk_stat_cb_unchanged++;
             return l->view;
         }
         vk_stat_cb_compared++;
-        if (!memcmp(l->copy, src, run)) {
+        if (guest_same(l->copy, src, run)) {   /* (0 too when some of it is gone: copied again, zeros there) */
             vk_stat_cb_same++; l->batch = gpu_stat_batches; l->wseq = write_seq;
             l->gen = have_gen ? gen : writes_over(g, run); l->g = g;
             return l->view;
@@ -2111,7 +2190,7 @@ static VkBufferView upload_slot(int stage, u32 slot, u64 va, u32 size) {
         if (!(l->copy = malloc(size))) { l->cap = 0; l->view = VK_NULL_HANDLE; return v; }
     }
     if (!have_gen) gen = writes_over(g, run);
-    memcpy(l->copy, src, run);
+    if (!guest_read(l->copy, src, run)) { l->view = VK_NULL_HANDLE; return v; }   /* (some of it gone: nothing to compare with) */
     l->va = va; l->size = size; l->run = run; l->serial = frames[frame_at].serial; l->view = v;
     l->batch = gpu_stat_batches; l->wseq = write_seq; l->gen = gen; l->g = g;
     return v;
@@ -6169,6 +6248,9 @@ static void vk_status_lines(void) {
     if (memo_on() == 2)
         fprintf(stderr, "[status] vulkan SSBU_VK_MEMO=check: %llu answers taken again checked, %llu differed (constant buffers %llu, shaders %llu, textures %llu)\n",
                 vk_stat_memo_checked, vk_stat_memo_wrong[0] + vk_stat_memo_wrong[1] + vk_stat_memo_wrong[2], vk_stat_memo_wrong[0], vk_stat_memo_wrong[1], vk_stat_memo_wrong[2]);
+    if (vk_stat_gone_reads)
+        fprintf(stderr, "[status] vulkan: %llu reads found guest memory the game gave back under a GPU binding (read as zeros)\n",
+                (unsigned long long)vk_stat_gone_reads);
     fprintf(stderr, "[status] vulkan (%s): %llu frames shown (%llu with no window to show them in), %llu clears (%llu masked drawn, %llu masked not drawn), "
                     "%llu 2D blits (%llu between formats it cannot blit), %u surfaces, %u textures (%llu made, %llu decoded on the CPU), %llu MB device memory; "
                     "%llu draws: %llu drawn in %llu renderings, skipped %llu shader / %llu pipeline / %llu target / %llu topology / %llu other; "
