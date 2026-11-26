@@ -450,6 +450,22 @@ static void warm_start(void);
 #ifdef _WIN32
 #define WARM_GAME "Local\\ssbu-game-running"
 static HANDLE game_mutex;                          /* (WARM_GAME) held while the game runs: ssbu --warm-shaders pauses for it */
+#else
+/* (Linux) WARM_GAME's counterpart: <shader cache>/game.lock, which every game holds shared (flock) while it
+ * runs. Prepare Shaders (tools/shader_aot.py game_running) pauses its compile for it, and the warm pass (ssbu
+ * --warm-shaders, below) stops for it. Without it both went on at full pace beside the game: the Linux launcher
+ * starts Prepare Shaders by itself since #589, and a Steam Deck's 4 cores and shared power were left to the
+ * compile in the menus and the first matches. */
+#define WARM_GAME_LOCK "game.lock"
+static const char *cache_dir(void);
+static void game_lock_take(void) {
+    static int fd = -1;   /* (kept open for the process's life: the lock goes with it) */
+    if (fd >= 0) return;
+    char path[1100];
+    snprintf(path, sizeof path, "%s/" WARM_GAME_LOCK, cache_dir());
+    fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd >= 0 && flock(fd, LOCK_SH)) { close(fd); fd = -1; }
+}
 #endif
 
 /* Direct3D 11 is DXVK's: always on Linux; on Windows when d3d11.dll is not the system's (the
@@ -701,6 +717,8 @@ static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *c) {
      * compile for it, and its workers on every core left a 4-core laptop's start nothing: it stopped
      * after "drawing with", before the built-in shaders were compiled) */
     game_mutex = CreateMutexA(NULL, FALSE, WARM_GAME);
+#else
+    game_lock_take();   /* (the same for Linux: WARM_GAME_LOCK) */
 #endif
     gfx_renderer_start(window);   /* (display.ini's renderer: this one draws unless another can: gpu_renderer.c) */
 
@@ -2554,8 +2572,9 @@ int gfx_warm_shaders_main(const char *dir, const char *luid) {
  * made. Each thread here draws programs once on a device of its own, into a 1x1 target, so both
  * caches (DXVK's state cache and Mesa's/RADV's shader cache) have them before the game first
  * needs them. There is no window or swap chain. warm.done and warm.log work as on Windows; a
- * lock file keeps two passes apart. Rewarm (the argument, or SSBU_SHADER_WARM_ALL=1) ignores
- * warm.done, as does a different exe, DXVK library, or SSBU_WARM_DRIVER. */
+ * lock file keeps two passes apart, and a game that starts stops the pass (WARM_GAME_LOCK: exit
+ * code 3). Rewarm (the argument, or SSBU_SHADER_WARM_ALL=1) ignores warm.done, as does a different
+ * exe, DXVK library, or SSBU_WARM_DRIVER. */
 typedef struct WarmRun {
     const char *dir;
     Found *files;
@@ -2578,6 +2597,18 @@ static int warm_lock(const char *dir) {
         return busy ? -2 : -1;
     }
     return fd;
+}
+
+/* Whether a game runs now (it holds WARM_GAME_LOCK shared, game_lock_take): taken exclusively, and let go at once,
+ * only when none does. */
+static int game_running(const char *dir) {
+    char path[1100];
+    snprintf(path, sizeof path, "%s/" WARM_GAME_LOCK, dir);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    int running = flock(fd, LOCK_EX | LOCK_NB) && (errno == EWOULDBLOCK || errno == EAGAIN);
+    close(fd);
+    return running;
 }
 
 /* The driver's part of warm.done's key, which a driver update changes (as the UMD version does on
@@ -2792,8 +2823,8 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     if (lock < 0) fprintf(stderr, "[warm] cannot make %s/warm.lock (%s): going on without it\n", dir, strerror(errno));
     nv_cache_vulkan_setup(dir);   /* (NVIDIA: the GPU code it compiles goes where the game will read it, gpu_nvcache.c) */
     int rewarm = (arg && !strcmp(arg, "rewarm")) || (getenv("SSBU_SHADER_WARM_ALL") && atoi(getenv("SSBU_SHADER_WARM_ALL")));
-    /* the processor below what the user does, as the compile workers are (the game is not running:
-     * Prepare Shaders is) */
+    /* the processor below what the user does, as the compile workers are (Prepare Shaders runs it; a game
+     * that starts meanwhile stops it: game_running) */
     setpriority(PRIO_PROCESS, 0, 10);
     if (!rt_video_init()) {   /* (DXVK's SDL window system, without a window) */
         fprintf(stderr, "[warm] not warmed: DXVK needs SDL's video system, which could not start\n");
@@ -2871,16 +2902,19 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     u8 finished[6];
     memset(finished, 0, sizeof finished);
     u32 started = 0;
-    for (u32 i = 0; i < nthreads && before + i < r.n; i++)
+    /* (a game running: none drawn now, exit code 3 - Prepare Shaders starts the pass again once it has closed) */
+    if (before < r.n && game_running(dir)) r.stop = 1;
+    for (u32 i = 0; i < nthreads && before + i < r.n && !r.stop; i++)
         if ((threads[started] = CreateThread(NULL, 16 << 20, warm_worker, &r, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL))) started++;
     if (!started) {
         if (before >= r.n) fprintf(stderr, "[warm] all %u shaders were drawn by an earlier run\n", r.n);
+        else if (r.stop) fprintf(stderr, "[warm] a game is running: %u shaders left for once it has closed\n", r.n - before);
         else fprintf(stderr, "[warm] cannot start the warm threads: the cache was not warmed\n");
         free(r.done);
         free(r.files);
         if (r.adapter) IDXGIAdapter1_Release(r.adapter);
         if (lock >= 0) close(lock);
-        return before >= r.n ? 0 : 1;
+        return before >= r.n ? 0 : r.stop ? 3 : 1;
     }
     fprintf(stderr, "[warm] %u shaders to draw on %s (%u already done), up to %u threads%s%s\n", r.n - before, name, before, started,
             rewarm ? " - rewarming" : "", env || later_pass ? "" : " - a full pass: one thread while the caches are written");
@@ -2899,6 +2933,10 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
             }
         }
         if (!live) break;
+        if (!r.stop && game_running(dir)) {   /* (as on Windows: the threads stop after the programs they are drawing) */
+            InterlockedExchange(&r.stop, 1);
+            fprintf(stderr, "[warm] a game started: stopping; the rest is drawn once it has closed\n");
+        }
         LONG at = r.next;
         if (at > (LONG)r.n) at = (LONG)r.n;
         /* (only work whose batch has finished, not just been drawn; before: earlier runs) */
@@ -2950,7 +2988,7 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
         u32 left = r.n - ndone;
         char rest[160];
         if (no_device) snprintf(rest, sizeof rest, "no Direct3D 11 device (Vulkan): the cache was not warmed");
-        else if (left) snprintf(rest, sizeof rest, "%u left for the next run", left);
+        else if (left) snprintf(rest, sizeof rest, "%u left for the next run%s", left, r.stop ? " (a game started)" : "");
         else snprintf(rest, sizeof rest, "all %u of the cache drawn", r.n);
         fprintf(out, "%04u-%02u-%02u %02u:%02u: %ld shaders drawn once on %s in %.1f s, %ld of them took over %.0f ms to create or draw, %ld not drawn; "
                      "%u drawn before; %s\n",
@@ -2967,7 +3005,7 @@ int gfx_warm_shaders_main(const char *dir, const char *arg) {
     free(r.files);
     if (r.adapter) IDXGIAdapter1_Release(r.adapter);
     if (lock >= 0) close(lock);
-    return no_device ? 1 : 0;
+    return no_device ? 1 : r.stop && ndone < r.n ? 3 : 0;   /* (3: a game started; Prepare Shaders carries on after it) */
 }
 #endif
 
