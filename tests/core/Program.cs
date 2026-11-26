@@ -718,6 +718,31 @@ static class Program
         Check(lobbyOnly && OnlineCount.Wanted, "online count: OPENSMASH_ONLINE_COUNT=lobby asks the lobby's own page only");
         Check(Array.TrueForAll(ServerRegion.All, r => r.Id == "eu" || r.Id == "na-east" || r.Id == "sa"), "online count: the regions' ids are the table's");
 
+        // how often the accounts service is asked for the home page's numbers (CommunityPoll.cs): 5 minutes by default
+        Check(CommunityPoll.Parse(null) == TimeSpan.FromMinutes(5) && CommunityPoll.Parse("") == TimeSpan.FromMinutes(5)
+              && CommunityPoll.Parse("soon") == TimeSpan.FromMinutes(5) && CommunityPoll.Parse("0") == TimeSpan.FromMinutes(5), "community poll: 300 s unless set");
+        Check(CommunityPoll.Parse("60") == TimeSpan.FromSeconds(60) && CommunityPoll.Parse(" 120 ") == TimeSpan.FromSeconds(120), "community poll: OPENSMASH_COMMUNITY_POLL_S=60 is the old pace");
+        Check(CommunityPoll.Parse("5") == TimeSpan.FromSeconds(30) && CommunityPoll.Parse("99999") == TimeSpan.FromHours(1), "community poll: kept within 30 s..1 h");
+        string pollWas = Environment.GetEnvironmentVariable(CommunityPoll.Variable);
+        Environment.SetEnvironmentVariable(CommunityPoll.Variable, "90");
+        var poll90 = CommunityPoll.Interval;
+        Environment.SetEnvironmentVariable(CommunityPoll.Variable, null);
+        var pollDefault = CommunityPoll.Interval;
+        Environment.SetEnvironmentVariable(CommunityPoll.Variable, pollWas);
+        Check(poll90 == TimeSpan.FromSeconds(90) && pollDefault == TimeSpan.FromSeconds(300), "community poll: read from OPENSMASH_COMMUNITY_POLL_S");
+        var five = TimeSpan.FromMinutes(5);
+        Check(CommunityPoll.Next(five, 0) == five && CommunityPoll.Next(five, 1) == five + TimeSpan.FromSeconds(30)
+              && CommunityPoll.Next(five, 0.5) == five + TimeSpan.FromSeconds(15), "community poll: a random 0..30 s on top");
+        Check(CommunityPoll.Next(TimeSpan.FromSeconds(60), 1) == TimeSpan.FromSeconds(60), "community poll: no random wait at the old pace");
+        bool jitterOk = true;
+        for (int i = 0; i < 200; i++) { var n = CommunityPoll.Next(); if (n < pollDefault || n > pollDefault + CommunityPoll.MaxJitter) jitterOk = false; }
+        Check(jitterOk, "community poll: the next wait within the interval and 30 s more");
+        var t0 = new DateTime(2026, 11, 26, 12, 0, 0, DateTimeKind.Utc);
+        Check(CommunityPoll.Due(DateTime.MinValue, t0, five) && !CommunityPoll.Due(t0, t0.AddSeconds(299), five) && CommunityPoll.Due(t0, t0.AddSeconds(300), five),
+              "community poll: shown again, asked only when the last answer is 5 minutes old (or there is none)");
+        Check(!CommunityPoll.Fresh(DateTime.MinValue, t0, five) && CommunityPoll.Fresh(t0, t0.AddSeconds(200), five) && !CommunityPoll.Fresh(t0, t0.AddSeconds(296), five),
+              "community poll: a page opened again within 5 minutes shows the last answer");
+
         FileChecks();
 
         Console.WriteLine($"{passed} passed, {failed} failed");

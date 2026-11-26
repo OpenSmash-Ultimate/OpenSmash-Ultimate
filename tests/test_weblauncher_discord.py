@@ -319,6 +319,46 @@ class Mastery(unittest.TestCase):
             self.assertEqual({u.split("/")[2] for u, _ in asked}, {x for x in da.server_region.official_lobbies(root)})
             self.assertIsNone(da.mastery_board(root, lambda url, headers=None: None))
 
+    def test_poll_interval(self):
+        self.assertEqual([da.poll_seconds(v) for v in ("", "x", "0", "60", " 120 ", "5", "99999")], [300, 300, 300, 60, 120, 30, 3600])
+        old = os.environ.get("OPENSMASH_COMMUNITY_POLL_S")
+        try:
+            os.environ["OPENSMASH_COMMUNITY_POLL_S"] = "90"
+            self.assertEqual(da.poll_seconds(), 90)
+            os.environ.pop("OPENSMASH_COMMUNITY_POLL_S")
+            self.assertEqual(da.poll_seconds(), 300)
+        finally:
+            if old is not None:
+                os.environ["OPENSMASH_COMMUNITY_POLL_S"] = old
+        self.assertEqual((da.poll_next(300, lambda: 0), da.poll_next(300, lambda: 1), da.poll_next(60, lambda: 1)), (300, 330, 60))
+
+    def test_top_asked_every_five_minutes(self):
+        with tempfile.TemporaryDirectory() as root:
+            acc = da.Account(root, root)
+            asked = []
+            old = os.environ.get("OPENSMASH_MASTERY_UI")
+            try:
+                os.environ.pop("OPENSMASH_MASTERY_UI", None)
+
+                def service(r):
+                    asked.append(r)
+                    return [{"id": "a", "name": "Ann", "points": 5, "pos": 1}]
+                acc.mastery_view(me=lambda r: None, board=lambda r: None, service=service)
+                acc.mastery_at = 0   # (the player's own points: again after a minute)
+                v = acc.mastery_view(me=lambda r: None, board=lambda r: self.fail("lobbies asked"), service=service)
+                self.assertEqual((len(asked), v["top"][0]["name"]), (1, "Ann"))   # (the top: not again before 5 minutes)
+                self.assertTrue(299 <= acc.top_next - time.time() <= 331)
+                acc.top_next = 0
+                acc.mastery_view(me=lambda r: None, board=lambda r: None, service=service)
+                self.assertEqual(len(asked), 2)
+                n = []
+                acc.ranked_view(None, board=lambda r, g: n.append(g) or [])
+                acc.ranked_view(None, board=lambda r, g: n.append(g) or [])
+                self.assertEqual(n, [None])   # (the ranked board too)
+            finally:
+                if old is not None:
+                    os.environ["OPENSMASH_MASTERY_UI"] = old
+
     def test_view_and_switches(self):
         with tempfile.TemporaryDirectory() as root:
             acc = da.Account(root, root)
@@ -329,15 +369,15 @@ class Mastery(unittest.TestCase):
                 os.environ.pop("OPENSMASH_MASTERY_UI")
                 v = acc.mastery_view(me=lambda r: None, board=lambda r: None, service=lambda r: None)
                 self.assertTrue(v["on"] and not v["available"] and v["top"] is None and v["arena_url"].startswith("https://www.ssbuarena.com"))
-                acc.mastery_at = 0
+                acc.mastery_at = acc.top_next = 0
                 v = acc.mastery_view(me=lambda r: [{"fighter": "fox", "name": "Fox", "points": 50, "veteran": 0, "games": 1, "wins": 0}],
                                      board=lambda r: [{"id": "x", "name": "Xia", "points": 5}], service=lambda r: None)
                 self.assertTrue(v["available"] and v["total"] == 50 and v["top"][0]["name"] == "Xia")
-                acc.mastery_at = 0
+                acc.mastery_at = acc.top_next = 0
                 v = acc.mastery_view(me=lambda r: None, board=lambda r: None, service=lambda r: None)   # (all down: the last answers kept)
                 self.assertEqual((v["total"], len(v["top"])), (50, 1))
                 # the accounts service's board first: the lobbies' list not asked when it answers
-                acc.mastery_at = 0
+                acc.mastery_at = acc.top_next = 0
                 v = acc.mastery_view(me=lambda r: None, board=lambda r: self.fail("lobbies asked"),
                                      service=lambda r: [{"id": "a", "name": "Ann", "points": 5200, "pos": 1}])
                 self.assertEqual(v["top"][0]["name"], "Ann")

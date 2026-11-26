@@ -432,8 +432,16 @@ async function refreshMastery() {
     + (m.top_on ? `<h4 class="ms-top">Top mastery</h4>${top ? `<table class="dc-gsp">${top}</table>` : `<p class="muted small">Not available now.</p>`}
        <a class="ms-full" href="${SITE_MASTERY}" target="_blank" rel="noopener">Full leaderboard →</a>` : "");
   clearTimeout(masteryTimer);
-  masteryTimer = setTimeout(refreshMastery, 60000);
+  masteryTimer = setTimeout(whenShown("mastery", refreshMastery), 60000);
 }
+/* (a page in the background asks nothing: what it skipped is asked when it is shown again. The accounts service's part,
+   the top mastery and the ranked board, is asked at most every 5 minutes by the launcher itself: discord_account.py) */
+const skipped = {};
+function whenShown(name, fn) { return () => { if (document.hidden) skipped[name] = fn; else fn(); }; }
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  for (const [name, fn] of Object.entries(skipped)) { delete skipped[name]; fn(); }
+});
 /* ---- the Competitive page: SSBU Arena's ranked top 10 (discord_account.py ranked_view), All / EU / NA East / SA ---- */
 let rankedRegion = "", rankedTimer = null;
 async function refreshRanked() {
@@ -443,13 +451,13 @@ async function refreshRanked() {
   if (r.leaderboard_url) $("#arena-full").href = r.leaderboard_url;
   const rows = r.rows || [];
   $("#ranked-box").innerHTML = !r.rows
-    ? `<p class="muted">${r.failed ? "The ranked board could not be read. It is asked again in a minute." : "Loading…"}</p>`
+    ? `<p class="muted">${r.failed ? "The ranked board could not be read. It is asked again in a few minutes." : "Loading…"}</p>`
     : !rows.length ? `<p><b>No ranked results yet.</b></p><p class="muted small">Ranked 1v1 has just started. Players show here after their placement games in SSBU Arena.</p>`
     : `<table class="ranked"><tr><th class="num">#</th><th>Fighters</th><th>Player</th><th>Tier</th><th class="num">W / L</th><th class="num">Rating</th></tr>${rows.map((x, i) =>
         `<tr><td class="pos">${x.rank || i + 1}</td><td>${(x.fighters || []).map(ficon).join("")}</td><td><b>${esc(x.name)}</b><span class="tag">#${esc(x.tag)}</span></td>
          <td><span class="tier" style="color:${esc(x.tier_color)}">${esc(x.tier)}</span></td><td class="num muted">${num(x.wins)} / ${num(x.losses)}</td><td class="num rating">${num(x.rating)}</td></tr>`).join("")}</table>`;
   clearTimeout(rankedTimer);
-  if ($("#view-competitive").classList.contains("active")) rankedTimer = setTimeout(refreshRanked, 60000);
+  if ($("#view-competitive").classList.contains("active")) rankedTimer = setTimeout(whenShown("ranked", refreshRanked), 60000);
 }
 $$("#ranked-regions button").forEach(b => b.addEventListener("click", () => {
   rankedRegion = b.dataset.region;
