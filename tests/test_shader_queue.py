@@ -299,6 +299,61 @@ class ServeTests(unittest.TestCase):
             k.CloseHandle(h)
         self.assertFalse(S.game_running())
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), "game.lock is Linux's")
+    def test_game_running_sees_the_games_lock_on_linux(self):
+        # runtime/gpu_d3d11.c game_lock_take: each game holds <shader cache>/game.lock shared while it runs. Before it
+        # the Linux compile and warm pass never paused for a game (#589 started them in the background).
+        import fcntl
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ):
+            os.environ.pop('SSBU_AOT_BY_GAME', None)
+            self.assertFalse(S.game_running(d))   # (no game yet: no file)
+            path = os.path.join(d, S.GAME_LOCK)
+            open(path, 'w').close()
+            self.assertFalse(S.game_running(d))   # (the file a closed game left)
+            game = os.open(path, os.O_RDWR)
+            try:
+                fcntl.flock(game, fcntl.LOCK_SH)
+                self.assertTrue(S.game_running(d))
+                other = os.open(path, os.O_RDWR)   # (the look leaves nothing held: a second game still starts)
+                try:
+                    fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                finally:
+                    os.close(other)
+                with mock.patch.dict(os.environ, {'SSBU_AOT_BY_GAME': '1'}):
+                    self.assertFalse(S.game_running(d))   # (the game waits for this run: it does not pause)
+            finally:
+                os.close(game)
+            self.assertFalse(S.game_running(d))
+
+    def test_the_warm_pass_waits_for_the_game_and_carries_on_after_it(self):
+        # Linux's warm pass (ssbu --warm-shaders) ends with code 3 when a game starts; Prepare Shaders waits for that
+        # game to close and starts it again, without rewarm (warm.done has what the first one drew).
+        from unittest import mock
+        calls, codes, running = [], [S.WARM_GAME_STARTED, 0], [True, True, False, False, False]
+
+        class Proc:
+            def __init__(self, cmd, **kw):
+                calls.append(cmd)
+                self.code = codes.pop(0)
+                self.stdout = io.StringIO('[warm] 10/20 drawn\n')
+
+            def wait(self, timeout=None):
+                return self.code
+
+        out = io.StringIO()
+        with mock.patch.object(S.os.path, 'isfile', return_value=True), \
+                mock.patch.object(S.subprocess, 'Popen', Proc), \
+                mock.patch.object(S, 'game_running', lambda cache=None: running.pop(0) if running else False), \
+                mock.patch.object(S, 'PAUSE_POLL', 0.001), mock.patch('sys.stdout', out):
+            self.assertTrue(S.warm_shaders('cache', True))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][-1], 'rewarm')
+        self.assertNotIn('rewarm', calls[1])
+        said = out.getvalue()
+        self.assertIn('warm: paused: the game is running', said)
+        self.assertIn('warm: warmed:', said)
+
     def test_a_slow_worker_does_not_hold_the_others(self):
         todo = [S.Key('vs', 's1' + 'a' * 14, None, 100)] + keys(20)
         totals, times, _shown = self.serve(todo, 2)

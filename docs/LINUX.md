@@ -275,6 +275,12 @@ and remembers what it drew in `warm.done`; a lock file keeps two passes apart. A
 fails (no Vulkan GPU, say) does not fail Prepare Shaders: the compiled shaders are kept and the
 game makes the missing GPU code at first use as before. `--no-warm` skips it.
 
+While the game runs, both wait for it: the compile sends its workers no new shader, and the warm pass
+stops after the programs it is drawing (or does not start), then carries on from `warm.done` once the
+game has closed. Each game holds `dump/shadercache/game.lock` (shared) while it runs; that is how they
+know. The launcher starts this preparation by itself in the background when shaders are missing, so a
+game started meanwhile, on a Steam Deck especially, no longer shares its processor and graphics with it.
+
 It runs after every successful compile, and draws only what `warm.done` says an earlier pass has
 not drawn, so running Prepare Shaders again to compile a few new shaders costs little. `warm.done`
 is keyed by this game, DXVK's libraries and the Vulkan driver's ICD manifest and library (Mesa's

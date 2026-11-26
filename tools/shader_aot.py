@@ -429,41 +429,56 @@ def jobs_for(priority, jobs):
     return default_jobs()
 
 
+WARM_GAME_STARTED = 3   # (ssbu --warm-shaders' exit code when a game started: runtime/gpu_d3d11.c WARM_GAME_LOCK)
+
+
 def warm_shaders(cache, rewarm):
     """Linux: draw every shader of the cache once through DXVK (ssbu --warm-shaders). DXVK and the
     Vulkan driver then have each program's pipeline and GPU code before the game first uses it.
-    Its lines ([warm] ...) go to this console as they come; True when it warmed."""
+    Its lines ([warm] ...) go to this console as they come; True when it warmed. While a game runs
+    (game_running) the pass waits, and a game that starts stops it (exit code WARM_GAME_STARTED):
+    once the game has closed it carries on from what warm.done says was drawn."""
     exe = os.path.join(ROOT, "build-linux", "ssbu")
     what = "DXVK/Vulkan"
     if not os.path.isfile(exe):
         print(f"warm: skipped: {os.path.relpath(exe, ROOT)} is not there (build the game first); the cache is compiled, "
               "and the game will make the driver's code as it first uses each shader", flush=True)
         return False
-    cmd = [exe, "--warm-shaders", cache] + (["rewarm"] if rewarm else [])
-    print(f"warm: drawing the cache once through {what} so the first use does not compile it"
-          + (" (rewarm: every shader again)" if rewarm else ""), flush=True)
-    try:
-        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1, **low_priority())
-    except OSError as e:
-        print(f"warm: not warmed: cannot start {os.path.relpath(exe, ROOT)}: {e}", flush=True)
-        return False
-    try:
-        for line in proc.stdout:
-            line = line.rstrip()
-            # (DXVK's device setup logs at info level: keep the console to the warm progress,
-            # its warnings and errors, not a page for each of its threads' devices)
-            if line.startswith(("[warm]", "warm:", "[gfx]", "warn:", "err:")):
-                print(line, flush=True)
-        code = proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
+    while True:
+        if game_running(cache):
+            print("warm: paused: the game is running; the warm pass goes on when it closes", flush=True)
+            while game_running(cache):
+                time.sleep(PAUSE_POLL * 2)
+            print("warm: the game has closed: the warm pass goes on", flush=True)
+        cmd = [exe, "--warm-shaders", cache] + (["rewarm"] if rewarm else [])
+        print(f"warm: drawing the cache once through {what} so the first use does not compile it"
+              + (" (rewarm: every shader again)" if rewarm else ""), flush=True)
         try:
-            proc.wait(10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        print("warm: stopped; the compiled shaders are kept", flush=True)
-        return False
+            proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, bufsize=1, **low_priority())
+        except OSError as e:
+            print(f"warm: not warmed: cannot start {os.path.relpath(exe, ROOT)}: {e}", flush=True)
+            return False
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                # (DXVK's device setup logs at info level: keep the console to the warm progress,
+                # its warnings and errors, not a page for each of its threads' devices)
+                if line.startswith(("[warm]", "warm:", "[gfx]", "warn:", "err:")):
+                    print(line, flush=True)
+            code = proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            print("warm: stopped; the compiled shaders are kept", flush=True)
+            return False
+        if code == WARM_GAME_STARTED:
+            rewarm = False   # (what it drew is in warm.done: the next pass carries on from there)
+            continue
+        break
     if code:
         print(f"warm: not warmed (the warm pass stopped with code {code}); the compiled shaders are kept, "
               "and the game will make the driver's code as it first uses each shader", flush=True)
@@ -1285,17 +1300,40 @@ class Worker:
 
 
 GAME_RUNNING = "Local\\ssbu-game-running"   # (runtime/gpu_d3d11.c WARM_GAME: the game holds it while it runs)
+GAME_LOCK = "game.lock"   # (Linux: runtime/gpu_d3d11.c WARM_GAME_LOCK, in the shader cache, held shared by each game)
 PAUSE_POLL = 1.0   # seconds between looks at whether the game still runs
 
 
-def game_running():
-    """Whether the game runs (Windows: its mutex is there). The compile pauses meanwhile: its workers on
-    every core left the game nothing as it started. Not when the game itself started it (--by-game): then
-    the game waits for the compile, with its progress on the loading screen."""
+def game_holds_lock(cache):
+    """Linux: whether a game holds <cache>/game.lock now (shared, flock): then it cannot be taken exclusively."""
+    import fcntl
+    try:
+        fd = os.open(os.path.join(cache, GAME_LOCK), os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)   # (and with it the exclusive lock, when it was taken)
+    return False
+
+
+def game_running(cache=None):
+    """Whether the game runs (Windows: its mutex is there; Linux: it holds game.lock in the shader cache). The
+    compile pauses meanwhile: its workers on every core left the game nothing as it started. On Linux they went on
+    beside the game until this lock (#589 made the launcher's background run every player's case: a Steam Deck's
+    menus and first matches shared its 4 cores with it). Not when the game itself started it (--by-game): then the
+    game waits for the compile, with its progress on the loading screen."""
     if os.environ.get("SSBU_AOT_BY_GAME"):
         return False
     if sys.platform != "win32":
-        return False
+        if not LINUX:
+            return False
+        return game_holds_lock(cache or (PREP.cache if PREP else os.path.join(ROOT, "dump", "shadercache")))
     if PREP and game_waits(PREP.cache):   # (a game waits for this very run, with its progress on the loading screen)
         return False
     import ctypes
