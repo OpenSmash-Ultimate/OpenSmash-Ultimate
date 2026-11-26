@@ -1422,7 +1422,7 @@ static u32 net_remote_low(void) {
     if (net_mode != 2) return rbn_remote_newest(1);
     u32 low = ~0u;
     for (int p = 0; p < net_n; p++) {
-        if (p == net_local || (rbn_gone_after(p) && rbn_remote_newest(p) >= rbn_gone_after(p))) continue;   /* (gone: all its pads known) */
+        if (p == net_local || rbn_gone_known(p)) continue;   /* (gone: all its pads known) */
         if (rbn_remote_newest(p) < low) low = rbn_remote_newest(p);
     }
     return low == ~0u ? 0 : low;
@@ -3911,7 +3911,7 @@ static DWORD WINAPI net_gone_box(LPVOID text) {   /* (its own thread: the game g
 static void net_gone_mark(int p, u32 after, const char *why) {
     if (p < 0 || p >= net_n || p == net_local) return;
     if (net_gone_after[p] && net_gone_after[p] <= after) return;   /* (the earliest cutoff heard holds, as in rb_net) */
-    rbn_gone(p, after ? after : 1, ld32(LOGIC_FRAME));
+    rbn_gone(p, after, ld32(LOGIC_FRAME));   /* (0: before its first pad) */
     net_gone_after[p] = rbn_gone_after(p); if (!net_gone_why[p]) net_gone_why[p] = why;
     fprintf(stderr, "[rb] net mode: player %d is gone from this fight (%s) after logic frame %u; this game is at %u\n",
             p + 1, why, net_gone_after[p], ld32(LOGIC_FRAME));
@@ -4011,7 +4011,7 @@ static void net_gone_check(u32 key, double waited_ms) {
                 for (int i = 0; k && i < 3; i++) rbl_send(out, (int)k);
             }
         }
-        if (net_gone_after[p] && waited_ms > 3000 && rbn_remote_newest(p) < net_gone_after[p]) {
+        if (net_gone_after[p] && waited_ms > 3000 && !rbn_gone_known(p) && rbn_remote_newest(p) < net_gone_after[p]) {
             fprintf(stderr, "[rb] net mode: player %d's last pads before its cutoff (%u) never came: cut at %u instead\n",
                     p + 1, net_gone_after[p], rbn_remote_newest(p));
             net_gone_mark(p, rbn_remote_newest(p), net_gone_why[p]);

@@ -101,6 +101,66 @@ class NetcodeTests(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+GONE_BEFORE_FIRST_PAD = r"""
+#include <stdio.h>
+#include <string.h>
+#include "hle_rb_net.h"
+/* A player gone before its first pad (its game never started the fight): the cutoff is 0. It was taken
+ * as 1, and frame 1's pad, which never comes, was waited for without end (a freeze report: the joiner at logic
+ * frame 7, "player 1 is gone ... after logic frame 1" over and over). Prints what the game may do then. */
+int main(void) {
+    static const RbnPad none;
+    RbnPad mine = none;
+    mine.buttons = 1;
+    rbn_reset(2, 1, 0);                        /* this game is player 2; player 1 (the host) never sends a pad */
+    for (uint32_t f = 1; f <= 7; f++) rbn_local(f, mine);
+    printf("before: can run 9 %d, known %d\n", rbn_can_run(9), rbn_gone_known(0));
+    rbn_gone(0, 1, 7);                         /* (what the old code did: cut after 1) */
+    printf("cut after 1: can run 9 %d, known %d\n", rbn_can_run(9), rbn_gone_known(0));
+    rbn_gone(0, 0, 7);                         /* cut at 0 */
+    int guessed = 1;
+    RbnPad p1 = rbn_get(0, 1, &guessed);
+    printf("cut at 0: can run 9 %d, known %d, after %u, pad 1 none %d guessed %d\n", rbn_can_run(9), rbn_gone_known(0),
+           rbn_gone_after(0), rbn_same(&p1, &none), guessed);
+    RbnPad late = none;
+    late.buttons = 2;
+    rbn_remote(0, 1, late);                    /* a pad that comes after all: none stays (every game alike) */
+    p1 = rbn_get(0, 1, &guessed);
+    printf("late pad: none %d, confirmed %u\n", rbn_same(&p1, &none), rbn_confirmed());
+    rbn_reset(2, 1, 0);
+    printf("next match: known %d, after %u\n", rbn_gone_known(0), rbn_gone_after(0));
+    return 0;
+}
+"""
+
+
+@unittest.skipUnless(HAVE_CLANG, 'needs clang-cl on Windows (deps\\llvm, or Visual Studio\'s C++ Clang tools), or clang')
+class GoneBeforeFirstPadTests(unittest.TestCase):
+    def test_a_player_gone_before_its_first_pad_is_not_waited_for(self):
+        folder = tempfile.mkdtemp(prefix='rbn gone ')
+        try:
+            src = os.path.join(folder, 'gone.c')
+            with open(src, 'w', encoding='utf-8') as f:
+                f.write(GONE_BEFORE_FIRST_PAD)
+            if os.name == 'nt':
+                exe = os.path.join(folder, 'gone.exe')
+                cmd = [cc.CLANG, '/nologo', '/O2', *cc.LINK_FLAGS, *cc.BASE_CFLAGS, '/I', str(ROOT / 'runtime'), src,
+                       str(ROOT / 'runtime/hle_rb_net.c'), '/Fe' + exe, '/Fo' + folder + os.sep, '/link', *cc.LINK_OPTIONS]
+            else:
+                exe = os.path.join(folder, 'gone')
+                cmd = ['clang', '-O2', '-w', '-I', str(ROOT / 'runtime'), src, str(ROOT / 'runtime/hle_rb_net.c'), '-o', exe]
+            r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            out = subprocess.run([exe], capture_output=True, text=True, timeout=60).stdout.splitlines()
+            self.assertEqual(out, ["before: can run 9 0, known 0",
+                                   "cut after 1: can run 9 0, known 0",   # (frame 1's pad never comes: waited for)
+                                   "cut at 0: can run 9 1, known 1, after 1, pad 1 none 1 guessed 0",
+                                   "late pad: none 1, confirmed 7",
+                                   "next match: known 0, after 0"])
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 @unittest.skipUnless(os.name == 'nt' and HAVE_CLANG, 'the link is winsock\'s: Windows, with clang-cl')
 class LinkTests(unittest.TestCase):
     def test_loopback(self):

@@ -12,6 +12,7 @@ typedef struct Remote {
     RbnPad guess[RBN_RING]; uint32_t guess_at[RBN_RING];   /* the guess a frame ran on, until its real pad comes */
     uint32_t newest;                                   /* every frame up to this one received */
     uint32_t gone;                                     /* (v0.9.2) gone from the fight after this frame: none from then on, 0: here */
+    int gone_none;                                     /* gone before its first pad (cutoff 0; gone is then 1): none of its pads is real */
 } Remote;
 #define SAMPLES 32
 /* everything a session keeps, in one place (rbn_state: the test runs two sessions in one process) */
@@ -95,7 +96,7 @@ void rbn_remote(int p, uint32_t frame, RbnPad pad) {
     Remote *r = &remote[p];
     if (frame + RBN_RING <= r->newest + 1 || frame > r->newest + RBN_RING) return;   /* outside the ring */
     if (r->at[frame & MASK] == frame) return;   /* (sent again: it already came) */
-    if (r->gone && frame > r->gone) return;    /* (past its cutoff: none, on every game alike) */
+    if (r->gone && (frame > r->gone || r->gone_none)) return;    /* (past its cutoff: none, on every game alike) */
     pad = rbn_rest(pad);
     r->pad[frame & MASK] = pad; r->at[frame & MASK] = frame;
     while (r->at[(r->newest + 1) & MASK] == r->newest + 1) r->newest++;
@@ -121,7 +122,7 @@ RbnPad rbn_get(int p, uint32_t frame, int *guessed) {
     if (p < 0 || p >= nplayers || !frame) return none;
     if (p == local_player) { RbnPad out = none; rbn_local_get(frame, &out); return out; }
     Remote *r = &remote[p];
-    if (r->gone && frame > r->gone) return none;
+    if (r->gone && (frame > r->gone || r->gone_none)) return none;
     if (r->at[frame & MASK] == frame) return r->pad[frame & MASK];
     /* not here yet: the newest real pad before it, held (a re-run of the frame guesses again, maybe better) */
     RbnPad g = none;
@@ -136,7 +137,10 @@ uint32_t rbn_take_mismatch(void) { uint32_t m = mismatch; mismatch = 0; return m
 void rbn_put_mismatch(uint32_t m) { if (m && (!mismatch || m < mismatch)) mismatch = m; }
 
 /* (a gone player's pads are all known once its real ones up to the cutoff came: none after it) */
-static uint32_t known_up_to(int p) { return remote[p].gone && remote[p].newest >= remote[p].gone ? 0xFFFFFFF0u : remote[p].newest; }
+static uint32_t known_up_to(int p) {
+    return remote[p].gone && (remote[p].gone_none || remote[p].newest >= remote[p].gone) ? 0xFFFFFFF0u : remote[p].newest;
+}
+int rbn_gone_known(int p) { return p >= 0 && p < nplayers && p != local_player && known_up_to(p) == 0xFFFFFFF0u; }
 uint32_t rbn_confirmed(void) {
     uint32_t c = local_newest;
     for (int p = 0; p < nplayers; p++) if (p != local_player && known_up_to(p) < c) c = known_up_to(p);
@@ -154,10 +158,19 @@ int rbn_can_run(uint32_t frame) {
     return 1;
 }
 void rbn_gone(int p, uint32_t after, uint32_t ran) {
-    if (p < 0 || p >= nplayers || p == local_player || !after) return;
+    if (p < 0 || p >= nplayers || p == local_player) return;
     Remote *r = &remote[p];
-    if (r->gone && r->gone <= after) return;   /* (the earliest cutoff heard holds) */
-    r->gone = after;
+    /* (after 0: gone before its first pad - a game that never started the fight. That cutoff was taken as 1 before,
+     * and then frame 1's pad, which never comes, was waited for without end: 0.5.1's freeze report 683764e5, "player 1
+     * is gone from this fight (the host's game never started this fight) after logic frame 1", 1633 times) */
+    if (!after) {
+        if (r->gone_none) return;
+        r->gone_none = 1;
+        if (!r->gone) r->gone = 1;
+    } else {
+        if (r->gone && r->gone <= after) return;   /* (the earliest cutoff heard holds) */
+        r->gone = after;
+    }
     /* frames past the cutoff this game already ran (up to `ran`) on a guess, or on a real pad that came before it
      * left, other than none: run again */
     static const RbnPad none;
