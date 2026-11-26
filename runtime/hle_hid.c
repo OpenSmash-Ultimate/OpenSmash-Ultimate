@@ -474,11 +474,17 @@ static void states_one(Cpu *c, void (*fill)(u64)) {
     c->x[0] = 1;
 }
 
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
 HLE_WRAP_EXPORT(_ZN2nn3hid18InitializeKeyboardEv) { if (!hid_plugin_on()) { orig(c); return; } hid_plugin_note("InitializeKeyboard"); }
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
 HLE_WRAP_EXPORT(_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE) { if (!hid_plugin_on()) { orig(c); return; } keyboard_none(c->x[0]); }
+/* signature: 16 words, sha256 d2a2a17e9b4f7f50 */
 HLE_WRAP_EXPORT(_ZN2nn3hid17GetKeyboardStatesEPNS0_13KeyboardStateEi) { if (!hid_plugin_on()) { orig(c); return; } states_one(c, keyboard_none); }
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
 HLE_WRAP_EXPORT(_ZN2nn3hid15InitializeMouseEv) { if (!hid_plugin_on()) { orig(c); return; } hid_plugin_note("InitializeMouse"); }
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
 HLE_WRAP_EXPORT(_ZN2nn3hid13GetMouseStateEPNS0_10MouseStateE) { if (!hid_plugin_on()) { orig(c); return; } mouse_none(c->x[0]); }
+/* signature: 16 words, sha256 d2a2a17e9b4f7f50 */
 HLE_WRAP_EXPORT(_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi) { if (!hid_plugin_on()) { orig(c); return; } states_one(c, mouse_none); }
 
 /* A plugin's look at controller `id` in `style` (the layout of npad_state): this PC's pad and keyboard while the
@@ -513,7 +519,11 @@ static void npad_states(Cpu *c, u32 style, u32 size) {
     npad_peek(c->x[0], ld32(c->x[2]), style, size);
     c->x[0] = 1;
 }
+/* signature: 16 words, sha256 71327273c0b3b43f */
 HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, STYLE_FULLKEY, 0x28); }
+/* signature: 16 words, sha256 71327273c0b3b43f */
 HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, 0, 0x28); }
+/* signature: 16 words, sha256 71327273c0b3b43f */
 HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, 0, 0x28); }
+/* signature: 16 words, sha256 71327273c0b3b43f */
 HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_11NpadGcStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, STYLE_GC, 0x30); }
