@@ -43,7 +43,8 @@ int rbn_can_run(uint32_t frame);
 /* (v0.9.2) player p is gone from the fight after frame `after` (the same cutoff on every game: its LEFT, or the host's
  * word): its pads past it are none, nothing waits for them, and frames already run past it with other pads run again */
 void rbn_gone(int p, uint32_t after, uint32_t ran);   /* (ran: the newest frame this game has run) */
-uint32_t rbn_gone_after(int p);                        /* 0: not gone */
+uint32_t rbn_gone_after(int p);                        /* 0: not gone (1 also for a cutoff of 0: gone before its first pad) */
+int rbn_gone_known(int p);                             /* gone, and every pad of it known (real up to the cutoff, none after) */
 
 /* ---- the wire (little-endian, lengths checked) ----
  * PADS: type 1 | player u8 | count u8 | runs u8 (bit 7: behind, version 14) | first u32 | frame u32 | check_frame u32 | check u32 |
