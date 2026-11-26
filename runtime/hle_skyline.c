@@ -186,6 +186,17 @@ static void csk_add_traced(Cpu *c) {
     csk_record_added(c);   /* (the real function keeps the entry; this notes which costume the match must use) */
     rt_call(c, csk_add_original);
 }
+/* Whether a place rt_describe named ("module+0x...") is in the CSK Collection. A copy of it that a mod brings in
+ * another build is loaded under the_csk_collection_ (tools/skyline.py names a plugin whose name is taken with a
+ * _ more), and it is the same plugin: in 0.5.1's crash reports its picture loads, which the guard below leaves
+ * out for the_csk_collection, crashed the game (main+0x323c4e0 <- the_csk_collection_+0x10f0b8). */
+#define CSK_NAME "the_csk_collection"
+static int csk_place(const char *described) {
+    size_t n = sizeof CSK_NAME - 1;
+    if (strncmp(described, CSK_NAME, n)) return 0;
+    while (described[n] == '_') n++;
+    return described[n] == '+';
+}
 static void csk_trace_hook(u64 at, u64 callback) {   /* (rt_inline_hook: each CSK hook's first run) */
     static u64 seen[64];
     static int seen_n;
@@ -252,7 +263,7 @@ void rt_inline_hook(Cpu *c, u64 at) {
         if (inline_hooks[i].native) { inline_hooks[i].native(c, inline_hooks[i].arg); continue; }
         {
             char who[96];
-            if (!strncmp(rt_describe(inline_hooks[i].callback, who, sizeof who), "the_csk_collection+", 19)) {
+            if (csk_place(rt_describe(inline_hooks[i].callback, who, sizeof who))) {
                 csk_trace_hook(at, inline_hooks[i].callback);
                 if (__atomic_load_n(&mods_gate, __ATOMIC_ACQUIRE) == 1) skyline_mods_gate("a CSK Collection hook");
             }
@@ -1636,7 +1647,15 @@ static void ui_path(Cpu *c) {
  * each call, the plugin's with the last loader the game passed. */
 #define IMAGE_LOAD 0x323c4e0
 u64 rt_module_named(const char *name, u64 *image_size, u64 *text_size);   /* (host.c) */
-static u64 image_load_original, csk_lo, csk_hi;   /* (csk_lo..csk_hi: the_csk_collection's image) */
+static u64 image_load_original;
+#define CSK_COPIES 4
+static u64 csk_lo[CSK_COPIES], csk_hi[CSK_COPIES];   /* (each loaded copy's image: the_csk_collection, the_csk_collection_, ...) */
+static int csk_copies;
+static int from_csk(u64 from) {
+    for (int i = 0; i < csk_copies; i++)
+        if (from >= csk_lo[i] && from < csk_hi[i]) return 1;
+    return 0;
+}
 static int csk_guard = 1, csk_guard_log;
 static SRWLOCK image_load_lock = SRWLOCK_INIT;
 static struct { u64 x0, x2; u32 w3; } image_load_last;   /* the last call passed on: what the plugin's hook kept */
@@ -1648,7 +1667,7 @@ static void image_load(Cpu *c) {
     u64 from = c->x[30], x0 = c->x[0], x2 = c->x[2];
     u32 w3 = (u32)c->x[3];
     char who[96];
-    if (from < csk_lo || from >= csk_hi) {   /* (the game's call) */
+    if (!from_csk(from)) {   /* (the game's call) */
         AcquireSRWLockExclusive(&image_load_lock);
         int watch = image_load_watch;
         image_load_watch = 0;
@@ -1847,15 +1866,24 @@ void skyline_load_plugins(Cpu *c) {
         if (entry) rt_call(c, entry);
         fprintf(stderr, "[skyline] plugin %s: main returned\n", names[i]);
     }
-    u64 csk_size = 0;
-    if ((csk_lo = rt_module_named("the_csk_collection", &csk_size, NULL))) {   /* (in front of its hook: image_load) */
-        csk_hi = csk_lo + csk_size;
+    char csk_names[CSK_COPIES][sizeof CSK_NAME + 8];
+    for (int k = 0; k <= 8 && csk_copies < CSK_COPIES; k++) {   /* (the_csk_collection, then a _ more for each copy: csk_place) */
+        char name[sizeof CSK_NAME + 8];
+        snprintf(name, sizeof name, "%s%.*s", CSK_NAME, k, "________");
+        u64 size = 0, base = rt_module_named(name, &size, NULL);
+        if (!base) continue;
+        snprintf(csk_names[csk_copies], sizeof csk_names[0], "%s", name);
+        csk_lo[csk_copies] = base;
+        csk_hi[csk_copies++] = base + size;
+    }
+    if (csk_copies) {   /* (in front of its hook: image_load) */
         const char *g = getenv("SSBU_CSK_GUARD"), *gl = getenv("SSBU_CSK_GUARD_LOG");
         csk_guard = !(g && *g == '0');
         csk_guard_log = gl && *gl && *gl != '0';
         image_load_original = rt_hook_function(MAIN_BASE + IMAGE_LOAD, rt_native(image_load, "csk guard: picture load"));
-        fprintf(stderr, "[skyline] csk guard: %s%s\n", !image_load_original ? "main+0x323c4e0 is not a function here, NOT installed"
-                : csk_guard ? "on" : "off (SSBU_CSK_GUARD=0), calls only watched", csk_guard_log ? ", every call logged" : "");
+        fprintf(stderr, "[skyline] csk guard: %s%s (%s%s%s)\n", !image_load_original ? "main+0x323c4e0 is not a function here, NOT installed"
+                : csk_guard ? "on" : "off (SSBU_CSK_GUARD=0), calls only watched", csk_guard_log ? ", every call logged" : "",
+                csk_names[0], csk_copies > 1 ? " and " : "", csk_copies > 1 ? csk_names[1] : "");
     }
     for (int ev = 0; ev < 2; ev++)   /* ArcFilesystemMounted, ModFilesystemMounted */
         for (u32 i = 0; i < event_n; i++)
