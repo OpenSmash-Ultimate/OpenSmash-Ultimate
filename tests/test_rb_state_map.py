@@ -115,6 +115,17 @@ class Owners(unittest.TestCase):
         self.assertIn('if (after != before) InterlockedIncrement(&rb_map_gen);', m)
         # the caller's frame record is read only where memory is committed
         self.assertIn('&& readable8(fp + 8))', m)
+        # ... on the alias area's stacks too (job workers' and fibers' stacks are jemalloc blocks)
+        self.assertIn('fp >= c->sp && fp - c->sp < 0x10000', m, 'only just above the live stack pointer')
+
+    def test_third_site_and_census(self):
+        m, state = src('hle_rb_map.c'), src('hle_rb_state.c')
+        self.assertIn('{0x71037612a8ull, 0x710007e574ull},', m, "rt_big3's third allocation function, both callers seen in 13.0.5")
+        self.assertIn('{0x71037612a8ull, 0x7100081980ull},', m)
+        # the census: pages wholly inside one block, and the written count in compare mode (SSBU_RB_SM_CMP, the default)
+        self.assertIn('if (best == 0x1000) { x->whole++;', m)
+        self.assertIn('int st = !sk && (sm_cmp > 0 || (sm_steady[wi] & m) != 0);', state)
+        self.assertIn('&& lr2_wanted(lr)', m, 'the alias stacks: only where the caller decides something')
 
 
 class RunAhead(unittest.TestCase):

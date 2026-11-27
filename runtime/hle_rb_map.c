@@ -13,7 +13,9 @@
  * SSBU_RB_MAP_CENSUS=<save>[,<saves>[,<file>]] (diagnostic, off): every block is tracked; from that fight save on,
  * for <saves> saves (default 300 then 600), each hot alias page is counted (hot, steady, written); then every page is
  * given to the live block covering most of it and the sites are listed with their pages (file default
- * build\rb_map_census.txt, the top of the list in the log). The map this file's list comes from.
+ * build\rb_map_census.txt, no spaces in its path; the top of the list in the log). Per site also the pages wholly
+ * inside one of its blocks (what leaving the site out would leave out), those of blocks made before the window, and
+ * their hot count a save. The map this file's list comes from.
  *
  * Left out (the exclusion): the live blocks of the sites in the list - built in (rb_map_sites below, each one proven
  * by the replay check and pairs) or SSBU_RB_MAP_SKIP=<file> (lines "<site> [<caller's caller>]", hex; 0: none). Every
@@ -121,6 +123,13 @@ static u64 orig_pm, orig_aa, orig_ra, orig_fr;
 static const Site rb_map_sites[] = {
     {0x7103816ef4ull, 0},                 /* the graphics module's 16 MB buffers (posix_memalign; 13.0.4 0x7103816944) */
     {0x710355a3b8ull, 0x71000a3fd8ull},   /* an 8 MB block (13.0.4 0x7103559e08 / 0x71000a3fd8) */
+    /* The allocation function of R4's third rt_big3 site (13.0.4 0x7103760cf8, there proven from the caller 0x7100081980
+     * only, 1.4 MB blocks). Here from two callers: 0x710007e574 (14 blocks, 31 MB, ~80 hot pages a save; in none of R4's
+     * lists: proven by the 2026-11-25 pairs alone) and 0x7100081980 (one 19 MB block, ~12). Almost none of their pages
+     * change. The only owner of the 2026-11-25 census (whole pages of one block) that ran clean alone: the others tried
+     * hung or crashed at the first rollbacks (docs/TECHNICAL.md, "Left out by owner"). */
+    {0x71037612a8ull, 0x710007e574ull},
+    {0x71037612a8ull, 0x7100081980ull},
 };
 
 static int listed(u64 lr, u64 lr2) {
@@ -139,10 +148,27 @@ static int readable8(u64 a) {
     rd_lo = lo; rd_hi = hi;
     return 1;
 }
+/* An alias-area frame record: the job workers' and fibers' stacks are jemalloc blocks there. Memory there comes and goes
+ * under any thread (UnmapPhysicalMemory, a rollback's load), so the region is asked each time, never kept. Asked only
+ * where it decides something: an allocation function of the list given with its caller (lr2_wanted), or the census. */
+static int alias_readable8(u64 a) {
+    MEMORY_BASIC_INFORMATION mi;
+    if (!VirtualQuery(G2H(a), &mi, sizeof mi) || mi.State != MEM_COMMIT || !mi.Protect || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return 0;
+    return a + 8 <= (u64)(uintptr_t)mi.BaseAddress - (u64)(uintptr_t)G2H(0) + mi.RegionSize;
+}
+static int lr2_wanted(u64 lr) {
+    if (census_on) return 1;
+    for (u32 i = 0; i < nwant; i++) if (want[i].lr == lr && want[i].lr2) return 1;
+    return 0;
+}
 static u32 site_now(Cpu *c) {
     u64 lr = c->x[30], fp = c->x[29], lr2 = 0;
     /* (a frame record on a guest stack: the stack area, or a stack the game made in its heap) */
     if (!(fp & 7) && ((fp >= STACK_BASE && fp < KERNEL_BASE + 0x1000000) || (fp >= HEAP_BASE && fp < HEAP_BASE + HEAP_LIMIT)) && readable8(fp + 8))
+        lr2 = ld64(fp + 8);
+    /* (or on an alias-area stack, just above the thread's own stack pointer: without them most sites had no caller's caller) */
+    else if (!(fp & 7) && fp >= ALIAS_BASE && fp < ALIAS_BASE + ALIAS_SIZE && fp >= c->sp && fp - c->sp < 0x10000 && lr2_wanted(lr)
+             && alias_readable8(fp + 8))
         lr2 = ld64(fp + 8);
     u32 s = site_of(lr, lr2);
     if (s < SITE_MAX - 1 && site_out[s] == 0) site_out[s] = listed(lr, lr2) ? 2 : 1;   /* (1 kept, 2 left out) */
@@ -151,7 +177,7 @@ static u32 site_now(Cpu *c) {
 static void noted(u64 p, u64 size, u32 s) {
     if (!p) return;
     InterlockedIncrement64(&n_alloc);
-    if (census_on) { AcquireSRWLockExclusive(&all.lock); tab_put(&all, p, size, s, 0); ReleaseSRWLockExclusive(&all.lock); }
+    if (census_on) { AcquireSRWLockExclusive(&all.lock); tab_put(&all, p, size, s, map_clock); ReleaseSRWLockExclusive(&all.lock); }
     if (site_out[s] == 2) {   /* (young: not left out yet, the set is the same) */
         AcquireSRWLockExclusive(&out.lock);
         tab_put(&out, p, size, s, map_clock);
@@ -274,6 +300,7 @@ static u64 set_sum(void) {   /* (out.lock held) the left-out set's fingerprint: 
     return h ^ (k << 48);
 }
 void *rb_map_save(const void *oldest) {
+    if (map_on > 0 && !nwant && census_on) { AcquireSRWLockExclusive(&out.lock); ++map_clock; ReleaseSRWLockExclusive(&out.lock); }   /* (the census's ages) */
     if (map_on <= 0 || !nwant) return NULL;
     AcquireSRWLockExclusive(&out.lock);
     long long stamp = ++map_clock, old = oldest ? ((const MapSave *)oldest)->stamp : stamp;
@@ -310,7 +337,7 @@ void rb_map_free(void *p) { free(p); }
 /* ---- the census ---- */
 static u16 *c_hot, *c_steady, *c_wr;   /* per alias page: saves hot, steady, written (copied: changed) */
 static u8 *c_gpu, *c_out;
-static long long c_saves;
+static long long c_saves, c_clock0, c_st_calls, c_wr_calls;
 static int c_done;
 /* (hle_rb_state.c, each fight save's sync, before the streaks) fight save number; the hot page a with its flags */
 int rb_map_census_want(long long fight_save) {
@@ -323,17 +350,19 @@ int rb_map_census_want(long long fight_save) {
         c_out = VirtualAlloc(NULL, ALIAS_SIZE >> 12, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (!c_hot || !c_steady || !c_wr || !c_gpu || !c_out) { census_on = 0; return 0; }
     }
+    if (!c_saves) c_clock0 = map_clock + 1;   /* (this save's stamp: rb_map_save comes after the sync) */
     c_saves++;
     return 1;
 }
 void rb_map_census_page(u64 a, int steady, int written, int gpu, int left_out) {
     if (c_hot[a] < 0xFFFF) c_hot[a]++;
+    c_st_calls += steady != 0; c_wr_calls += written != 0;
     if (steady && c_steady[a] < 0xFFFF) c_steady[a]++;
     if (written && c_wr[a] < 0xFFFF) c_wr[a]++;
     if (gpu) c_gpu[a] = 1;
     if (left_out) c_out[a] = 1;
 }
-typedef struct Agg { u32 site; u64 pages, gpu, out, hot, steady, wr, blocks, bytes; } Agg;
+typedef struct Agg { u32 site; u64 pages, gpu, out, hot, steady, wr, blocks, bytes, whole, whole_old, whole_hot; } Agg;
 static int blk_cmp(const void *x, const void *y) { u64 a = ((const Blk *)x)->p, b = ((const Blk *)y)->p; return (a > b) - (a < b); }
 static int agg_cmp(const void *x, const void *y) { const Agg *a = x, *b = y; return (a->hot < b->hot) - (a->hot > b->hot); }
 /* (after the save that ends the window: every guest thread held) the report */
@@ -358,19 +387,20 @@ void rb_map_census_end(void) {
         u64 g = ALIAS_BASE + (a << 12), ge = g + 0x1000;
         /* the live block covering most of the page */
         while (lo < nb && bl[lo].p + bl[lo].size <= g) lo++;   /* (blocks sorted by start; a block ending before g is past for good... */
-        u64 best = 0; u32 bs = SITE_MAX;
+        u64 best = 0; u32 bs = SITE_MAX; long long bborn = LLONG_MAX;
         /* (...mostly: a long block starting before may still cover it) look back a little and forward over the page */
         u64 j = lo > 64 ? lo - 64 : 0;
         for (; j < nb && bl[j].p < ge; j++) {
             u64 s0 = bl[j].p > g ? bl[j].p : g, e0 = bl[j].p + bl[j].size < ge ? bl[j].p + bl[j].size : ge;
-            if (e0 > s0 && e0 - s0 > best) { best = e0 - s0; bs = (u32)bl[j].site; }
+            if (e0 > s0 && e0 - s0 > best) { best = e0 - s0; bs = (u32)bl[j].site; bborn = bl[j].born; }
         }
         if (bs == SITE_MAX) {   /* (a block starting far before: binary search for the last start <= g) */
             u64 l = 0, h = nb;
             while (l < h) { u64 m = (l + h) / 2; if (bl[m].p <= g) l = m + 1; else h = m; }
-            if (l && bl[l - 1].p + bl[l - 1].size > g) bs = (u32)bl[l - 1].site;
+            if (l && bl[l - 1].p + bl[l - 1].size > g) { bs = (u32)bl[l - 1].site; best = bl[l - 1].p + bl[l - 1].size >= ge ? 0x1000 : bl[l - 1].p + bl[l - 1].size - g; bborn = bl[l - 1].born; }
         }
         Agg *x = &ag[bs];
+        if (best == 0x1000) { x->whole++; x->whole_hot += c_hot[a]; if (bborn < c_clock0) x->whole_old++; }   /* (wholly inside one block: what the exclusion can leave out; old: made before the window) */
         x->pages++; x->gpu += c_gpu[a]; x->out += c_out[a]; x->hot += c_hot[a]; x->steady += c_steady[a]; x->wr += c_wr[a];
         total[0]++; total[1] += c_hot[a]; total[2] += c_wr[a]; total[3] += c_gpu[a];
     }
@@ -379,14 +409,16 @@ void rb_map_census_end(void) {
     char d1[96], d2[96];
     fprintf(stderr, "[rb] state map census, %lld saves: %llu hot pages (%.0f a save, %.0f written a save; %llu in GPU memory); %llu live blocks of %u sites; file %s (%.0f ms)\n",
             c_saves, total[0], (double)total[1] / c_saves, (double)total[2] / c_saves, total[3], nb, nsites, census_file, (double)GetTickCount64() - t0);
-    if (f) fprintf(f, "# site lr lr2 | pages hot a save | written a save | steady a save | distinct pages | GPU pages | left out | live blocks | MB | lr | lr2\n");
+    fprintf(stderr, "[rb] state map census: %lld page visits steady, %lld written\n", c_st_calls, c_wr_calls);
+    if (f) fprintf(f, "# site lr lr2 | pages hot a save | written a save | steady a save | distinct pages | GPU pages | left out | live blocks | MB | lr | lr2 | pages wholly in one block | of them in a block older than the window | their hot a save\n");
     for (u32 i = 0; i <= SITE_MAX; i++) {
         Agg *x = &ag[i];
         if (!x->pages) continue;
         u64 lr = x->site < SITE_MAX ? sites[x->site].lr : 0, lr2 = x->site < SITE_MAX ? sites[x->site].lr2 : 0;
-        if (f) fprintf(f, "%llx %llx | %.1f | %.1f | %.1f | %llu | %llu | %llu | %llu | %.2f | %s | %s\n", lr, lr2, (double)x->hot / c_saves, (double)x->wr / c_saves,
+        if (f) fprintf(f, "%llx %llx | %.1f | %.1f | %.1f | %llu | %llu | %llu | %llu | %.2f | %s | %s | %llu | %llu | %.1f\n", lr, lr2, (double)x->hot / c_saves, (double)x->wr / c_saves,
                        (double)x->steady / c_saves, x->pages, x->gpu, x->out, x->blocks, x->bytes / 1048576.0,
-                       lr ? rt_describe(lr, d1, sizeof d1) : "(no live block)", lr2 ? rt_describe(lr2, d2, sizeof d2) : "-");
+                       lr ? rt_describe(lr, d1, sizeof d1) : "(no live block)", lr2 ? rt_describe(lr2, d2, sizeof d2) : "-",
+                       x->whole, x->whole_old, (double)x->whole_hot / c_saves);
         if (i < 40) fprintf(stderr, "[rb]   site %llx %llx: %.0f hot a save, %.0f written, %llu pages (%llu GPU, %llu left out), %llu blocks %.1f MB\n", lr, lr2,
                             (double)x->hot / c_saves, (double)x->wr / c_saves, x->pages, x->gpu, x->out, x->blocks, x->bytes / 1048576.0);
     }
