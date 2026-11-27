@@ -6,6 +6,7 @@ Output: dist/launcher/<rid> (self-contained; users do not need .NET).
 """
 import argparse
 import json
+import os
 import pathlib
 import plistlib
 import shutil
@@ -80,13 +81,26 @@ def copy_notices(output):
     (destination / "packages.txt").write_text("\n".join(sorted(packages)) + "\n", encoding="utf-8")
 
 
+def default_layout(rid, environ=None):
+    """The layout when --layout is not given: folder for macOS, single-file elsewhere. On Apple Silicon a compressed
+    single-file .NET 8 program crashed at start in its TLS/HTTP code (an AccessViolationException, dotnet/runtime#123324,
+    #542): the single file started 0 times in 20 on the reporter's Mac, the folder 20 in 20. Inside the .app bundle
+    the folder looks the same to the user. OPENSMASH_MAC_SINGLE_FILE=1 keeps the single file on macOS too (the old
+    default)."""
+    environ = os.environ if environ is None else environ
+    if rid.startswith("osx") and environ.get("OPENSMASH_MAC_SINGLE_FILE", "") != "1":
+        return "folder"
+    return "single-file"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rid", required=True, choices=RIDS)
     parser.add_argument("--configuration", choices=("Release", "Debug"), default="Release")
     parser.add_argument("--output-root", type=pathlib.Path, default=ROOT / "dist" / "avalonia")
-    parser.add_argument("--layout", choices=("single-file", "folder"), default="single-file",
-                        help="single-file bundles/compresses the runtime and native libraries (default)")
+    parser.add_argument("--layout", choices=("single-file", "folder"),
+                        help="single-file bundles/compresses the runtime and native libraries (default on Windows and "
+                             "Linux); folder leaves them beside the program (default on macOS, see default_layout)")
     parser.add_argument("--version", help="the release's version (X.Y.Z[-pre]): the program's and the macOS bundle's")
     parser.add_argument("--source-manifest", type=pathlib.Path,
                         help="embed a checksum-pinned release source manifest prepared by prepare_desktop_source.py")
@@ -94,6 +108,8 @@ def main():
     if args.version is not None and not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", args.version):
         parser.error("--version: X.Y.Z or X.Y.Z-pre")
     rid = args.rid
+    if args.layout is None:
+        args.layout = default_layout(rid)
     source_properties = []
     if args.version:
         source_properties.append(f"-p:Version={args.version}")
