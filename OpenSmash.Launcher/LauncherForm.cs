@@ -339,7 +339,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Display", SettingKeys = new[] { "ui_language", "window", "window_size", "pacing" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
-                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "direct", "reports", "telemetry" } },   // ("direct": This network (LAN) only - the official lobbies are relay only)
+                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "direct", "net_ping", "reports", "telemetry" } },   // ("direct": This network (LAN) only - the official lobbies are relay only)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "remap", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
@@ -366,6 +366,8 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "code", Label = "Lobby code", Text = true },
                 new Setting { Key = "server", Label = "Server", Text = true },
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
+                // (display.ini net_ping, SSBU_NET_PING: each other player's ping and the input delay in an online rollback fight)
+                new Setting { Key = "net_ping", Label = "Ping in online fights", Values = new[] { "1", "0" }, Labels = new[] { "Shown, with the input delay", "Hidden" } },
                 // (v0.5.0, signed-in players only) what the launcher sends after a game: a crash's report, and the
                 // session's performance summary (aggregates: OpenSmash.Core CrashReport.cs, PerfReport.cs)
                 new Setting { Key = "reports", Label = "Send crash reports", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
@@ -1860,7 +1862,7 @@ namespace OpenSmash.Launcher
             string D(string key) => IniValue(display, "", key) ?? SettingDefaults.Of(key);
             _iniValues["ui_language"] = D("ui_language");
             UiLocale.Select(_iniValues["ui_language"]);
-            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "hide_cursor", "overlay", "volume" })
+            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "hide_cursor", "overlay", "net_ping", "volume" })
                 _iniValues[key] = D(key);
             _iniValues["window_size"] = _iniValues["width"] + "x" + _iniValues["height"];
             _iniValues["renderer"] = SettingDefaults.RendererShown(D("renderer"), IniValue(display, "", "renderer_menu"));   // (#429)
@@ -2091,7 +2093,7 @@ namespace OpenSmash.Launcher
             // every value back when it closed put the game's changes (the renderer, the window...) back
             // to what they were before the game started.
             string display = GameFolder.ConfigFile(_repo, "display.ini"), pads = GameFolder.ConfigFile(_repo, "controllers.ini");
-            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "renderer", "hide_cursor", "overlay", "volume" })
+            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "renderer", "hide_cursor", "overlay", "net_ping", "volume" })
                 if (_changed.Contains(key)) SetIni(display, "", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
             // (the renderer as the in-game menu writes it: renderer_menu too, so an older launcher's "renderer = d3d11"
             // later still means this choice: runtime/gpu_display.c, #429)

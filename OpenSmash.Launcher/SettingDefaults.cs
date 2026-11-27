@@ -25,6 +25,7 @@ namespace OpenSmash.Launcher
             ("display.ini", "", "renderer", "auto"),   // (Windows: Vulkan first on AMD, NVIDIA and Intel cards, else Direct3D 11)
             ("display.ini", "", "hide_cursor", "1"),
             ("display.ini", "", "overlay", "1"),
+            ("display.ini", "", "net_ping", "1"),   // (runtime/net_ping.h: the ping in online rollback fights)
             ("display.ini", "", "volume", "100"),
             ("controllers.ini", "general", "keyboard_player", "1"),
             ("controllers.ini", "general", "background", "1"),

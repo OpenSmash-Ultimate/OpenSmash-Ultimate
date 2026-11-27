@@ -16,7 +16,9 @@
 
 #include "gpu_overlay.h"
 #include "gpu_menu.h"
+#include "display.h"
 #include "net.h"
+#include "net_ping.h"
 
 #include "ui_font.h"
 
@@ -253,6 +255,7 @@ static NetPeerQ badge_peers[4];
 static int badge_n;
 static int badge_wanted(void) {
     static u64 next;
+    if (!display_net_ping()) return 0;   /* (SSBU_NET_PING=0, display.ini net_ping = 0: no ping on screen) */
     u64 t = GetTickCount64();
     if (t >= next) {   /* (twice a second) */
         int was = badge_n;
@@ -279,6 +282,103 @@ static void badge(float w) {
         text_sized(x + size + 2, y + row * i, size, OVL_RGBA(235, 235, 235, 255), line);
     }
 }
+/* The ping in an online rollback fight (net_ping.h has the rules; SSBU Arena's look): each other player's round trip and
+ * the input delay in use, by a 2-player fight's stock icons or in a list at the top left. The numbers and their text are
+ * taken twice a second (rb_net_ping_view); a frame only makes the quads from that text: nothing is formatted or
+ * allocated per frame. Off (SSBU_NET_PING=0, display.ini net_ping = 0): nothing is asked or drawn. */
+int rb_net_ping_view(NetPingView *v);   /* (hle_rb_core.c) */
+static struct {
+    int n, local, ms[NET_PING_PLAYERS], tlen[NET_PING_PLAYERS], dlen;
+    char t[NET_PING_PLAYERS][8], delay[16];
+} fp;
+static int fight_ping_wanted(void) {
+    static u64 next;
+    if (!display_net_ping()) return 0;
+    u64 t = GetTickCount64();
+    if (t >= next) {   /* (twice a second) */
+        static char said[16] = "-";
+        NetPingView v;
+        int was = fp.n;
+        next = t + 500;
+        fp.n = rb_net_ping_view(&v);
+        if (fp.n) {
+            fp.local = v.local;
+            for (int i = 0; i < fp.n; i++) { fp.ms[i] = v.ms[i]; net_ping_text(fp.t[i], sizeof fp.t[i], v.ms[i]); fp.tlen[i] = (int)strlen(fp.t[i]); }
+            net_ping_delay_text(fp.delay, sizeof fp.delay, v.delay, v.delay_how);
+            fp.dlen = (int)strlen(fp.delay);
+            if (!was || strcmp(said, fp.delay)) {   /* (a line as the fight's overlay starts, and when the delay changes) */
+                char pings[96] = "";
+                size_t k = 0;
+                for (int i = 0; i < fp.n && k + 16 < sizeof pings; i++)
+                    if (v.ms[i] != -2) k += (size_t)snprintf(pings + k, sizeof pings - k, "%sP%d %s", k ? ", " : "", i + 1, fp.t[i]);
+                fprintf(stderr, "[net] ping overlay: in the fight: %d players, this game P%d; pings %s; input delay %s\n", fp.n, fp.local + 1,
+                        pings[0] ? pings : "none", fp.delay[0] ? fp.delay : "not chosen yet");
+                snprintf(said, sizeof said, "%s", fp.delay);
+            }
+        }
+    }
+    return fp.n > 0;
+}
+#define PING_DARK OVL_RGBA(15, 15, 15, 255)
+#define PING_LIGHT OVL_RGBA(235, 235, 235, 255)
+static const unsigned ping_colour[3] = {OVL_RGBA(77, 219, 89, 255), OVL_RGBA(250, 204, 46, 255), OVL_RGBA(242, 66, 56, 255)};
+#define PING_UNLIT OVL_RGBA(107, 107, 115, 255)
+#define PING_CAP 0.32f   /* (the atlas's capitals start this far down a letter's height, 0.54 of it high: measured on its glyphs) */
+static void ping_glyphs(float x, float y, float size, unsigned color, const char *s) {   /* (text_sized without its shadow) */
+    for (float w = size / 2; *s; s++, x += w)
+        if (*s > 32 && *s < 127) quad(x, y, w, size, *s - 32, color);
+}
+/* bold, with a dark outline: two passes half a dot apart over dark copies around (SSBU Arena's ldn_ping_text) */
+static void ping_text(float x, float y, float size, float o, unsigned color, const char *s) {
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 2; dx++)
+            if (dx || dy) ping_glyphs(x + dx * o, y + dy * o, size, PING_DARK, s);
+    ping_glyphs(x, y, size, color, s);
+    ping_glyphs(x + o, y, size, color, s);
+}
+/* one item at (x, y), the top of its icon (7 dots high, as the capitals): four bars, the number, the delay */
+static void ping_item(float x, float y, float h, int ms, const char *t, int tlen, const char *df) {
+    float dot = net_ping_dot(h), gap = dot / 2 > 1 ? dot / 2 : 1, o = gap, h7 = 7 * dot, size = net_ping_size(h);
+    int level = net_ping_level(ms), lit = net_ping_bars(ms);
+    for (int i = 0; i < 4; i++) {
+        float bx = x + i * (dot + gap), bh = h7 * (i + 1) / 4;
+        rect(bx - o, y + h7 - bh - o, dot + 2 * o, bh + 2 * o, PING_DARK);
+    }
+    for (int i = 0; i < 4; i++) {
+        float bx = x + i * (dot + gap), bh = h7 * (i + 1) / 4;
+        rect(bx, y + h7 - bh, dot, bh, i < lit ? ping_colour[level] : PING_UNLIT);
+    }
+    float tx = x + 4 * dot + 3 * gap + 2 * dot, ty = y - PING_CAP * size;
+    ping_text(tx, ty, size, o, ping_colour[level], t);
+    if (df[0]) ping_text(tx + tlen * size / 2 + 3 * dot, ty, size, o, PING_LIGHT, df);
+}
+static void fight_ping(float w, float h) {
+    float dot = net_ping_dot(h), size = net_ping_size(h);
+    if (fp.n == 2) {   /* left of the other player's stock icons */
+        int i = 1 - fp.local;
+        float right, bottom;
+        net_ping_anchor(w, h, i, &right, &bottom);
+        ping_item(right - net_ping_width(h, fp.tlen[i], fp.dlen), bottom - 7 * dot, h, fp.ms[i], fp.t[i], fp.tlen[i], fp.delay);
+        return;
+    }
+    /* 3 or more players: one row at the top's middle ("P2 <bars> 48   P3 <bars> 60   2f auto"; the frame-rate overlay
+     * has the top left, the timer the top right) */
+    float o = dot / 2 > 1 ? dot / 2 : 1, cw = size / 2, label = 3 * cw, sep = 4 * cw, total = 0;
+    for (int i = 0; i < fp.n; i++) if (fp.ms[i] != -2) total += (total > 0 ? sep : 0) + label + net_ping_width(h, fp.tlen[i], 0);
+    if (fp.dlen) total += sep + fp.dlen * cw;
+    float x = (w - total) / 2, y = h / 60 + PING_CAP * size;
+    int first = 1;
+    for (int i = 0; i < fp.n; i++) {
+        if (fp.ms[i] == -2) continue;
+        char p[4] = {'P', (char)('1' + i), 0, 0};
+        if (!first) x += sep;
+        first = 0;
+        ping_text(x, y - PING_CAP * size, size, o, PING_LIGHT, p);
+        ping_item(x + label, y, h, fp.ms[i], fp.t[i], fp.tlen[i], "");
+        x += label + net_ping_width(h, fp.tlen[i], 0);
+    }
+    if (fp.dlen) ping_text(x + sep, y - PING_CAP * size, size, o, PING_LIGHT, fp.delay);
+}
 static void draw(ID3D11DeviceContext *ctx, ID3D11RenderTargetView *rtv, unsigned x0, unsigned y0, unsigned w, unsigned h);
 static double history[HISTORY];   /* milliseconds per frame, newest at [head - 1] */
 static unsigned head, filled;
@@ -295,13 +395,14 @@ void overlay_present(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11RenderTa
         if (filled < HISTORY) filled++;
     }
     last = now;
-    int menu = menu_visible(), ping = !menu && badge_wanted(), msg = message[0] != 0;
-    if (!show && !menu && !ping && !msg) return;
+    int menu = menu_visible(), ping = !menu && badge_wanted(), fping = !menu && fight_ping_wanted(), msg = message[0] != 0;
+    if (!show && !menu && !ping && !fping && !msg) return;
     if (!state) state = init(dev) ? 1 : -1;
     if (state < 0) return;
     nverts = 0;
     if (show && !menu_blocks_input()) hud(detail);   /* (an open menu instead of the overlay) */
     if (ping) badge((float)w);
+    if (fping) fight_ping((float)w, (float)h);
     if (menu) menu_draw((float)w, (float)h);
     if (msg) message_draw((float)w, (float)h);
     draw(ctx, rtv, x0, y0, w, h);
@@ -321,12 +422,13 @@ unsigned overlay_quads(unsigned w, unsigned h, int show, const char *detail, con
         if (filled < HISTORY) filled++;
     }
     last = now;
-    int menu = menu_visible(), ping = !menu && badge_wanted(), msg = message[0] != 0;
+    int menu = menu_visible(), ping = !menu && badge_wanted(), fping = !menu && fight_ping_wanted(), msg = message[0] != 0;
     *verts = (const OverlayVertex *)verts_out();
-    if (!show && !menu && !ping && !msg) return 0;
+    if (!show && !menu && !ping && !fping && !msg) return 0;
     nverts = 0;
     if (show && !menu_blocks_input()) hud(detail);
     if (ping) badge((float)w);
+    if (fping) fight_ping((float)w, (float)h);
     if (menu) menu_draw((float)w, (float)h);
     if (msg) message_draw((float)w, (float)h);
     return nverts;

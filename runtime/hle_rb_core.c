@@ -49,6 +49,8 @@ void rb_shadow_note(u64 at, u64 size) { (void)at; (void)size; }
 int rb_net_fixed_clock(void) { return 0; }
 int rb_online_match_now(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_net_fight_now(void) { return 0; }      /* (ipc_vi.c: low_latency's hold) */
+#include "net_ping.h"
+int rb_net_ping_view(NetPingView *v) { memset(v, 0, sizeof *v); return 0; }   /* (gpu_overlay.c: no online rollback fight here) */
 int rb_sd_hold_now(void) { return 0; }        /* (hle_online_delay.c) */
 int rb_online_match_reported(void) { return 0; }   /* (hle_online_delay.c) */
 int rb_online_self_cut(void) { return 0; }    /* (hle_online_delay.c) */
@@ -958,6 +960,12 @@ static double net_pads_heard_ms[RBN_PLAYERS];
 static int net_left_take(const u8 *buf, int len);
 static void net_gone_check(u32 key, double waited_ms);
 static int net_mode = -1, net_delay = 2, net_lag_lo = 1, net_lag_hi = 6, net_loss = 10, net_frames = 1800;
+/* (the ping overlay, net_ping.h: SSBU_NET_PING) each player's round trips as the overlay shows them, from the HELLOs and
+ * the PADS acks below (this game's thread); how the input delay was chosen (NET_DELAY_*: the host's own, the others'
+ * from its HELLO). Read by the render thread (rb_net_ping_view); nothing of the fight reads them. */
+#include "net_ping.h"
+static NetPingHist ping_hist[RBN_PLAYERS];
+static volatile int net_delay_how;
 static u32 net_key0;            /* the logic frame the fight started at */
 static double net_t0;           /* and when (ms) */
 static u8 *net_got;             /* by frame - net_key0: delivered */
@@ -1412,6 +1420,7 @@ static int net_hello_heard(const RbnHello *h) {
         double rtt = (double)(now - h->echo - h->hold) / 1000.0;
         if (!hs_rtt_n[p] || rtt < hs_rtt_min[p]) hs_rtt_min[p] = rtt;
         if (!hs_rtt_n[p]) hs_rtt_t0[p] = now_ms();
+        net_ping_sample(&ping_hist[p], now_ms(), rtt);
         if (hs_rtt_n[p]++ < 3 || !(hs_rtt_n[p] % 3000))   /* (a wait at the set-up measures thousands: M7 logs fewer) */
             fprintf(stderr, "[rb] handshake: round trip to player %d %.1f ms (least so far %.1f, %d measured)\n", p + 1, rtt, hs_rtt_min[p], hs_rtt_n[p]);
     }
@@ -1760,6 +1769,7 @@ static void net_receive(u32 key) {
             double rtt = rbl_last_arrival_ms() - net_sent_ms[ack & (RBN_RING - 1)];   /* (by arrival: the link's thread) */
             if (rtt < net_rtt_min_s) net_rtt_min_s = rtt;
             net_rtt_sum += rtt; net_rtt_n++;
+            net_ping_sample(&ping_hist[p], now_ms(), rtt);
         }
         if (ack > net_acked_by[p]) net_acked_by[p] = ack;
         if (m.frame > net_heard[p]) net_heard[p] = m.frame;
@@ -2406,7 +2416,7 @@ static void net_step(Cpu *c, u64 frame) {
         net_fight = S.fights;
         if (!net_got) { net_got = calloc(1u << 20, 1); net_final = calloc(1u << 20, sizeof *net_final); }
         else { memset(net_got, 0, 1u << 20); memset(net_final, 0, (1u << 20) * sizeof *net_final); }
-        if (net_delay < 0) { net_delay = 2; fprintf(stderr, "[rb] net mode: no input delay agreed (no handshake): 2\n"); }
+        if (net_delay < 0) { net_delay = 2; net_delay_how = NET_DELAY_FIXED; fprintf(stderr, "[rb] net mode: no input delay agreed (no handshake): 2\n"); }
         if (net_mode == 2) {
             int measured = 0;
             for (int p = 0; p < RBN_PLAYERS; p++) measured |= hs_rtt_n[p] > 0;
@@ -3030,7 +3040,7 @@ static void net_hello_send(void) {
             if (!hs_join_id) { LARGE_INTEGER t; QueryPerformanceCounter(&t); hs_join_id = net_mix((u64)t.QuadPart, (u64)GetCurrentProcessId()) | 1; }
             h.seed = hs_join_id;
         }
-        if (net_local == 0 && hs_delay_ready) h.input_delay = net_delay + 1;
+        if (net_local == 0 && hs_delay_ready) { h.input_delay = net_delay + 1; h.delay_how = net_delay_how; }
         u64 now = now_us();
         h.t = now;
         if (hs_peer_t[p]) { h.echo = hs_peer_t[p]; h.hold = (u32)(now - hs_peer_t_at[p]); }
@@ -3084,7 +3094,8 @@ static void net_hello(int now) {
                 char t[200] = ""; size_t k = 0;
                 for (int p = 1; p < net_n; p++) k += snprintf(t + k, sizeof t - k, "%s player %d %.1f ms", p > 1 ? "," : "", p + 1, hs_rtt_min[p]);
                 fprintf(stderr, "[rb] handshake: round trips (the least of %d over 5 s or more):%s; the longest %.1f ms: input delay %d\n", HS_RTT_SAMPLES, t, worst, net_delay);
-            } else fprintf(stderr, "[rb] handshake: input delay %d (set)\n", net_delay);
+                net_delay_how = NET_DELAY_AUTO;
+            } else { fprintf(stderr, "[rb] handshake: input delay %d (set)\n", net_delay); net_delay_how = NET_DELAY_FIXED; }
             hs_delay_ready = 1;
         }
     }
@@ -3107,7 +3118,7 @@ static void net_hello(int now) {
         if (net_local > 0 && h.player == 0 && h.seed && h.seed != hs_seed && h.input_delay) {
             int was = net_delay;
             hs_seed = h.seed; hs_agreed = 1;
-            net_delay = h.input_delay - 1; hs_delay_ready = 1;
+            net_delay = h.input_delay - 1; hs_delay_ready = 1; net_delay_how = h.delay_how;
             if (h.players >= 2 && h.players <= RBN_PLAYERS) net_n = h.players;   /* (M7: how many play, from the host) */
             if (net_local >= net_n) fprintf(stderr, "[rb] handshake: the host plays %d players, but this PC is set up as player %d: start it as player 2-%d\n",
                                             net_n, net_local + 1, net_n);
@@ -4812,6 +4823,18 @@ int rb_online_match_now(void) { return net_mode == 2 && net_online && online_mat
 /* (ipc_vi.c, low_latency's hold) a fight of net mode under way - Online, a relay's or a direct link's - with no run-ahead:
  * the frames before its first safe point and after its end are left out (rb_on is fixed at boot, the hold follows this) */
 int rb_net_fight_now(void) { return net_mode == 2 && net_armed && S.in_fight && !ra_engaged; }
+/* (gpu_overlay.c, the render thread, twice a second) the ping overlay's numbers: players 0 outside an online rollback fight */
+int rb_net_ping_view(NetPingView *v) {
+    memset(v, 0, sizeof *v);
+    int local = net_local, n = net_n;
+    if (!(net_mode == 2 && net_armed && S.in_fight) || local < 0 || n < 2) return 0;
+    if (n > NET_PING_PLAYERS) n = NET_PING_PLAYERS;
+    if (local >= n) return 0;
+    double t = now_ms();
+    v->players = n; v->local = local; v->delay = net_delay; v->delay_how = net_delay_how;
+    for (int p = 0; p < NET_PING_PLAYERS; p++) v->ms[p] = p >= n || p == local ? -2 : net_ping_shown(&ping_hist[p], t);
+    return n;
+}
 static void online_fight_start(void) {
     if (!online_match) return;
     u64 impl = fm_impl();
@@ -5065,6 +5088,8 @@ static void online_forget(const char *why) {
     hs_agreed = 0; hs_seed = 0; hs_delay_ready = 0; net_delay = online_delay_set;
     memset(hs_agreed_by, 0, sizeof hs_agreed_by); memset(hs_peer_t, 0, sizeof hs_peer_t); memset(hs_peer_t_at, 0, sizeof hs_peer_t_at);
     memset(hs_rtt_min, 0, sizeof hs_rtt_min); memset(hs_rtt_t0, 0, sizeof hs_rtt_t0); memset(hs_rtt_n, 0, sizeof hs_rtt_n);
+    for (int p = 0; p < RBN_PLAYERS; p++) net_ping_reset(&ping_hist[p]);
+    net_delay_how = NET_DELAY_UNKNOWN;
     ch_have_mine = 0; memset(ch_have_peer, 0, sizeof ch_have_peer);
     rules_have = 0; rules_id = 0; rules_chunks = 0;
 }
