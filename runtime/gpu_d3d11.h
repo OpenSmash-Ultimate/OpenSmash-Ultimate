@@ -10,6 +10,7 @@ int d3d11_present_again(void);   /* the last frame once more (gfx_present_again)
 void d3d11_blit2d(const u32 *regs);
 void d3d11_dispatch(const u32 *regs, const u32 *qmd);
 int d3d11_copy_resident(u64 dst_va, u64 src_va, u64 bytes);
+int d3d11_surface_pixels(u64 guest, u32 *width, u32 *height, u8 **pixels);
 void d3d11_resident_flush(u64 va, u64 bytes);
 void d3d11_resident_written(u64 va, u64 bytes);
 void d3d11_stream_wrote(u64 va, u64 bytes);

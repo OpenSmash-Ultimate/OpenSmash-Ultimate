@@ -37,6 +37,7 @@ typedef struct GfxBackend {
     DWORD (*last_enter_thread)(void);
     void (*report_compiles)(void (*line)(const char *text));
     void *(*display_output)(void);
+    int (*surface_pixels)(u64 guest, u32 *width, u32 *height, u8 **pixels);   /* (NULL: none) */
 } GfxBackend;
 extern GfxBackend gfx_backend;   /* (gpu_backend.c) the back end drawing */
 
@@ -54,6 +55,10 @@ static inline void gfx_stream_end(void) { gfx_backend.stream_end(); }
 static inline void gfx_gpu_unmapped(u64 va, u64 size) { gfx_backend.gpu_unmapped(va, size); }
 static inline void gfx_guest_unmapped(u64 addr, u64 size) { gfx_backend.guest_unmapped(addr, size); }
 static inline int gfx_draw_logging(void) { return gfx_backend.draw_logging(); }
+/* the picture the GPU drew at guest address `guest` (gpu.c's copy engine), read back; see the macOS note below */
+static inline int gfx_surface_pixels(u64 guest, u32 *width, u32 *height, u8 **pixels) {
+    return gfx_backend.surface_pixels ? gfx_backend.surface_pixels(guest, width, height, pixels) : 0;
+}
 #else
 /* The entry points, as every back end implements them (macOS' by these names; Direct3D 11's as
  * d3d11_*, gpu_d3d11.h). */
