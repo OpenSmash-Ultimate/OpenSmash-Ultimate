@@ -6,9 +6,14 @@
 // site's own pages use the .webp next to it, which System.Drawing cannot read). Nothing is kept in this repository; a key
 // without an icon, or a download that fails, is drawn as the name's initial by the launchers. OPENSMASH_FIGHTER_ICONS
 // names another base address (tests, a mirror).
+// Each icon downloaded is kept on disk, %LOCALAPPDATA%\OpenSmash\fighter-icons\<folder>.png (~/.local/share/OpenSmash on
+// Linux; OPENSMASH_SETTINGS_DIR moves the OpenSmash folder, as for project_folder.txt), and used from there for 30 days:
+// every launcher start downloaded them all again, and they are most of what ssbuarena.com serves (its host counts each
+// request). A folder that cannot be read or written is the memory alone, as before. OPENSMASH_ICON_CACHE=0: memory only.
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -102,24 +107,55 @@ namespace OpenSmash.Core
         /// <summary>the icon's address (PNG), or null</summary>
         public static string IconUrl(string any) => IconFolder(any) is { } f ? Base() + f + "/1.png" : null;
 
-        // ---- the downloaded icons, kept for the launcher's life (a failed one is not asked again) -----------------------
+        // ---- the downloaded icons, kept for the launcher's life (a failed one is not asked again) and on disk -----------
         static readonly ConcurrentDictionary<string, byte[]> Got = new ConcurrentDictionary<string, byte[]>();
         static readonly ConcurrentDictionary<string, byte> Asked = new ConcurrentDictionary<string, byte>();
         static readonly SemaphoreSlim Gate = new SemaphoreSlim(4);
 
-        /// <summary>the icon's PNG bytes when downloaded; null meanwhile (the download starts, `changed` is called when it is
-        /// there) or when there is none. Never throws.</summary>
+        public const string CacheVariable = "OPENSMASH_ICON_CACHE";
+        public static readonly TimeSpan CacheAge = TimeSpan.FromDays(30);
+        const int MaxIcon = 512 * 1024;
+
+        /// <summary>the folder the icons are kept in, or null (OPENSMASH_ICON_CACHE=0, or no per-user folder)</summary>
+        public static string IconCacheDir()
+        {
+            string v = Environment.GetEnvironmentVariable(CacheVariable)?.Trim();
+            if (v == "0" || string.Equals(v, "off", StringComparison.OrdinalIgnoreCase) || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)) return null;
+            string dir = Environment.GetEnvironmentVariable("OPENSMASH_SETTINGS_DIR");
+            if (string.IsNullOrEmpty(dir))
+            {
+                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrEmpty(local)) return null;
+                dir = Path.Combine(local, "OpenSmash");
+            }
+            return Path.Combine(dir, "fighter-icons");
+        }
+
+        // (a PNG and a sane size: nothing else is handed to the image decoders)
+        static bool IsPng(byte[] b) => b != null && b.Length >= 8 && b.Length <= MaxIcon && b[0] == 0x89 && b[1] == (byte)'P' && b[2] == (byte)'N' && b[3] == (byte)'G';
+
+        /// <summary>the icon's PNG bytes when downloaded (or kept on disk); null meanwhile (the download starts, `changed` is
+        /// called when it is there) or when there is none. Never throws.</summary>
         public static byte[] Icon(HttpClient http, string any, Action changed = null)
         {
-            string url = IconUrl(any);
-            if (url == null || http == null) return null;
+            string folder = IconFolder(any);
+            if (folder == null || http == null) return null;
+            string url = Base() + folder + "/1.png";
             if (Got.TryGetValue(url, out var bytes)) return bytes;
-            if (Asked.TryAdd(url, 0)) _ = Fetch(http, url, changed);
+            // (on the thread pool: the disk is read there too, and the callers are painting)
+            if (Asked.TryAdd(url, 0)) _ = Task.Run(() => Fetch(http, url, folder, changed));
             return null;
         }
 
-        static async Task Fetch(HttpClient http, string url, Action changed)
+        static async Task Fetch(HttpClient http, string url, string folder, Action changed)
         {
+            string file = CacheFile(folder);
+            if (FromDisk(file) is { } kept)
+            {
+                Got[url] = kept;
+                try { changed?.Invoke(); } catch { }
+                return;
+            }
             await Gate.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -127,13 +163,57 @@ namespace OpenSmash.Core
                 using var r = await http.GetAsync(url, cts.Token).ConfigureAwait(false);
                 if (!r.IsSuccessStatusCode) return;
                 var b = await r.Content.ReadAsByteArrayAsync(cts.Token).ConfigureAwait(false);
-                // (a PNG and a sane size: nothing else is handed to the image decoders)
-                if (b.Length < 8 || b.Length > 512 * 1024 || b[0] != 0x89 || b[1] != (byte)'P' || b[2] != (byte)'N' || b[3] != (byte)'G') return;
+                if (!IsPng(b)) return;
                 Got[url] = b;
+                ToDisk(file, b);
                 try { changed?.Invoke(); } catch { }
             }
             catch (Exception e) when (e is HttpRequestException || e is TaskCanceledException || e is OperationCanceledException || e is InvalidOperationException) { }
             finally { Gate.Release(); }
+        }
+
+        /// <summary>the kept icon's file, &lt;cache&gt;/&lt;folder&gt;.png, or null (no cache; a folder not of letters, digits and "_")</summary>
+        static string CacheFile(string folder)
+        {
+            if (string.IsNullOrEmpty(folder) || folder.Any(c => !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))) return null;
+            try { return IconCacheDir() is { } dir ? Path.Combine(dir, folder + ".png") : null; }
+            catch (Exception e) when (e is ArgumentException || e is PlatformNotSupportedException) { return null; }
+        }
+
+        /// <summary>the kept icon when it is a PNG younger than 30 days; a damaged one is removed (and downloaded again)</summary>
+        static byte[] FromDisk(string file)
+        {
+            if (file == null) return null;
+            try
+            {
+                var info = new FileInfo(file);
+                if (!info.Exists || DateTime.UtcNow - info.LastWriteTimeUtc > CacheAge) return null;
+                if (info.Length <= MaxIcon && File.ReadAllBytes(file) is var b && IsPng(b)) return b;
+                File.Delete(file);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException || e is NotSupportedException || e is System.Security.SecurityException) { }
+            return null;
+        }
+
+        /// <summary>the icon kept: written next to its file and moved over it, so a half-written one is never read. Any error
+        /// (a folder that is missing and cannot be made, read-only, full): not kept, the memory alone.</summary>
+        static void ToDisk(string file, byte[] b)
+        {
+            if (file == null) return;
+            string tmp = null;
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(file));
+                tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                File.WriteAllBytes(tmp, b);
+                File.Move(tmp, file, true);
+                tmp = null;
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException || e is NotSupportedException || e is System.Security.SecurityException) { }
+            finally
+            {
+                if (tmp != null) try { File.Delete(tmp); } catch (Exception e) when (e is IOException || e is UnauthorizedAccessException) { }
+            }
         }
 
         /// <summary>tests: the cache emptied</summary>

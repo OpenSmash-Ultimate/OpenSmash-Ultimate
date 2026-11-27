@@ -5,7 +5,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using OpenSmash.Core;
 
@@ -569,6 +572,67 @@ static class Program
             Check(RankedBoard.Parse("{\"message\":\"x\"}") == null && RankedBoard.Parse("[]")?.Count == 0, "ranked board: an error is no answer, an empty board is one");
             Check(await RankedBoard.TopAsync(null, null) == null, "ranked board: no accounts service, no answer");
         }
+        // ---- the fighter icons kept on disk (Fighters.Icon): a made-up PNG from a fake address, the requests counted
+        {
+            string iconRoot = Path.Combine(Path.GetTempPath(), "os-core-icons-" + Guid.NewGuid().ToString("N"));
+            string settingsWas = Environment.GetEnvironmentVariable("OPENSMASH_SETTINGS_DIR"), cacheWas = Environment.GetEnvironmentVariable(Fighters.CacheVariable);
+            var fake = new FakeIcons();
+            using var http = new HttpClient(fake);
+            try
+            {
+                Environment.SetEnvironmentVariable("OPENSMASH_SETTINGS_DIR", iconRoot);
+                Environment.SetEnvironmentVariable(Fighters.CacheVariable, null);
+                string kept = Path.Combine(iconRoot, "fighter-icons", "jack.png");
+                Check(Fighters.IconCacheDir() == Path.Combine(iconRoot, "fighter-icons"), "fighter icons: kept in the OpenSmash folder (OPENSMASH_SETTINGS_DIR moves it)");
+                Fighters.ForgetIcons();
+                byte[] got = await IconOf(http, "Joker");
+                Check(got != null && got.SequenceEqual(FakeIcons.Png) && fake.Calls == 1 && File.Exists(kept) && File.ReadAllBytes(kept).SequenceEqual(got)
+                      && Directory.GetFiles(Path.GetDirectoryName(kept)).Length == 1, "fighter icons: downloaded once, kept on disk (no temporary file left)");
+                Fighters.ForgetIcons();   // (the launcher started again)
+                got = await IconOf(http, "jack");
+                Check(got != null && got.SequenceEqual(FakeIcons.Png) && fake.Calls == 1, "fighter icons: the kept one is used, nothing asked");
+                File.SetLastWriteTimeUtc(kept, DateTime.UtcNow - Fighters.CacheAge - TimeSpan.FromDays(1));
+                Fighters.ForgetIcons();
+                got = await IconOf(http, "jack");
+                Check(got != null && fake.Calls == 2 && DateTime.UtcNow - File.GetLastWriteTimeUtc(kept) < TimeSpan.FromHours(1), "fighter icons: one older than 30 days is downloaded again");
+                File.WriteAllText(kept, "<html>not a png</html>");
+                Fighters.ForgetIcons();
+                got = await IconOf(http, "jack");
+                Check(got != null && got.SequenceEqual(FakeIcons.Png) && fake.Calls == 3 && File.ReadAllBytes(kept).SequenceEqual(FakeIcons.Png), "fighter icons: a damaged file is downloaded again");
+                // OPENSMASH_ICON_CACHE=0: the memory alone, nothing written
+                string offRoot = iconRoot + "-off";
+                Environment.SetEnvironmentVariable("OPENSMASH_SETTINGS_DIR", offRoot);
+                Environment.SetEnvironmentVariable(Fighters.CacheVariable, "0");
+                Fighters.ForgetIcons();
+                got = await IconOf(http, "Fox");
+                Check(got != null && fake.Calls == 4 && Fighters.IconCacheDir() == null && !Directory.Exists(offRoot), "fighter icons: OPENSMASH_ICON_CACHE=0 writes nothing");
+                Fighters.ForgetIcons();
+                got = await IconOf(http, "Fox");
+                Check(got != null && fake.Calls == 5, "fighter icons: OPENSMASH_ICON_CACHE=0 downloads at each start, as before");
+                // a folder that cannot be made (under a file): the icon all the same
+                Environment.SetEnvironmentVariable(Fighters.CacheVariable, null);
+                string blocker = Path.Combine(iconRoot, "a-file");
+                File.WriteAllText(blocker, "x");
+                Environment.SetEnvironmentVariable("OPENSMASH_SETTINGS_DIR", Path.Combine(blocker, "sub"));
+                Fighters.ForgetIcons();
+                got = await IconOf(http, "Wolf");
+                Check(got != null && got.SequenceEqual(FakeIcons.Png) && fake.Calls == 6, "fighter icons: a folder that cannot be written, the icon from the memory");
+                // a failed download: nothing kept, none shown
+                Environment.SetEnvironmentVariable("OPENSMASH_SETTINGS_DIR", iconRoot);
+                fake.Status = HttpStatusCode.NotFound;
+                Fighters.ForgetIcons();
+                got = await IconOf(http, "Ike", 3000);
+                Check(got == null && fake.Calls == 7 && !File.Exists(Path.Combine(iconRoot, "fighter-icons", "ike.png")), "fighter icons: a failed download is not kept");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("OPENSMASH_SETTINGS_DIR", settingsWas);
+                Environment.SetEnvironmentVariable(Fighters.CacheVariable, cacheWas);
+                Fighters.ForgetIcons();
+                try { Directory.Delete(iconRoot, true); } catch { }
+                try { Directory.Delete(iconRoot + "-off", true); } catch { }
+            }
+        }
         // ---- the Online rules (OnlineSettings): the same in every launcher
         {
             var v = new Dictionary<string, string> { ["lobby"] = "auto", ["code"] = "old", ["server"] = "my.host:1", ["direct"] = "on" };
@@ -747,6 +811,30 @@ static class Program
 
         Console.WriteLine($"{passed} passed, {failed} failed");
         return failed == 0 ? 0 : 1;
+    }
+
+    /// <summary>a fighter's icon as a launcher gets it: asked, and asked again once `changed` says it is there</summary>
+    static async Task<byte[]> IconOf(HttpClient http, string fighter, int waitMs = 10000)
+    {
+        var there = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        byte[] b = Fighters.Icon(http, fighter, () => there.TrySetResult(true));
+        if (b != null) return b;
+        await Task.WhenAny(there.Task, Task.Delay(waitMs));
+        return Fighters.Icon(http, fighter);
+    }
+
+    /// <summary>ssbuarena.com's icons without the network: the same made-up PNG for every address, the requests counted</summary>
+    sealed class FakeIcons : HttpMessageHandler
+    {
+        public static readonly byte[] Png = { 0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, (byte)'I', (byte)'H', (byte)'D', (byte)'R' };
+        public int Calls;
+        public HttpStatusCode Status = HttpStatusCode.OK;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Calls);
+            return Task.FromResult(new HttpResponseMessage(Status) { Content = new ByteArrayContent(Png) });
+        }
     }
 
     static byte[] Zip(params (string name, string text)[] files)
