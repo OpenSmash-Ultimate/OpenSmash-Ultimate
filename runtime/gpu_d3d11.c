@@ -3273,7 +3273,11 @@ static u64 table_hash(const ShaderInfo *info, CbufSource *src) {
  * for the whole run: gigabytes, until the system ran out. Past SSBU_SHADER_KEEP of them (default
  * 2500; 0: keep all), the ones no draw has asked for in a minute are released, least recently
  * used first, and the program loads again from the disk cache at its next use (a load, not a
- * compile: a few ms on a compiler thread, the draw skipped meanwhile, as at its first use). */
+ * compile: a few ms on a compiler thread, the draw skipped meanwhile, as at its first use).
+ * Only the game's own programs count toward SSBU_SHADER_KEEP: the prewarm's untaken ones have their
+ * own memory budget (SSBU_SHADER_PREWARM_MB) and cannot be put away, so counting them put away the
+ * game's recently used programs to no end, each loaded again at its next use (#622: with a large
+ * prewarm, a brief missing object every so often). SSBU_SHADER_KEEP_PREWARM=1 counts them as before. */
 /* What a program is made from (a put-away one whose cache file has gone is translated again from it). */
 typedef struct ShaderSrc { const u8 *p; u32 size; int stage; u32 vs_outputs; const u32 *local; u32 shared; const CbufSource *src; int alpha_tested; } ShaderSrc;
 
@@ -3312,7 +3316,9 @@ static int by_use(const void *a, const void *b) {
 /* (render thread, once a frame) */
 static void evict_shaders(void) {
     static u32 keep = ~0u;
+    static int count_prewarm = -1;
     if (keep == ~0u) { const char *e = getenv("SSBU_SHADER_KEEP"); keep = e ? (u32)atoi(e) : 2500; }
+    if (count_prewarm < 0) { const char *e = getenv("SSBU_SHADER_KEEP_PREWARM"); count_prewarm = e && atoi(e) > 0; }
     if (!keep || gfx_stat_presented % 60) return;
     u32 made = 0, old = 0;
     for (u32 i = 0; i < shader_count; i++)
@@ -3320,10 +3326,10 @@ static void evict_shaders(void) {
             made++;
             if (gfx_stat_presented - shader_cache[i]->used > 3600) old++;
         }
-    /* (the prewarm's programs no draw has taken yet are live too, up to thousands: they cannot be put away, so the
-     * game's own are put away for them) */
+    /* (the prewarm's programs no draw has taken yet are live too, up to thousands: they cannot be put away, so with
+     * SSBU_SHADER_KEEP_PREWARM=1 the game's own are put away for them) */
     LONG pw = prewarm_ready - prewarm_taken;
-    u32 live = made + (pw > 0 ? (u32)pw : 0);
+    u32 live = made + (count_prewarm && pw > 0 ? (u32)pw : 0);
     if (live <= keep || !old) return;
     Shader **list = malloc(sizeof *list * old);
     if (!list) return;
