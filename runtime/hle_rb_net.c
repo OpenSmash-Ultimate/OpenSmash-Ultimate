@@ -271,6 +271,19 @@ int rbn_online_delay_for_rtt(double rtt_ms) {
      * (33 ms) of input delay back for that; delay 5 there: up to 18 % over the frame; 4 and less waited for pads hundreds
      * of times. At 72 ms one way delay 2: no waits, under 1 % over the frame. */
     if (rtt_ms < 15) return 1;
+    /* SSBU_RB_AUTO_DELAY_V2 (default 1; 0 = the rule below, 0.5.0-0.5.3): SSBU Arena's Auto V2 (its rb_net.c auto_ping_frames,
+     * GPL-3.0-or-later): ceil(RTT / 2 / 16.67 + 0.25) - 1 frames, at least 2, here at most RBN_ONLINE_DELAY_MAX. Round trip ->
+     * delay: 15-91 ms 2 | 92-125 3 | 126-158 4 | 159-191 5 | 192-225 6 | 226-258 7 | 259-291 8 | 292 and more 9. One frame
+     * more than the rule below from 92 ms (two from 192 ms): pairs on one PC, 2026-11-27, with the pad sent at its read
+     * (SSBU_RB_EARLY_SEND), frames over 25 ms a minute on both games: 100 ms delay 2 -> 3: 17-36 -> 5; 150 ms 3 -> 4: 91 -> 8,
+     * 200 ms 4 -> 6; the catch-ups that miss the frame are what players see as stutter, and a catch-up of 3+ frames
+     * costs 10-12 ms on players' PCs (their logs), so the frame of input delay buys most of them back. */
+    {   const char *e = getenv("SSBU_RB_AUTO_DELAY_V2");
+        if (!(e && *e == '0')) {
+            int d = ((int)(rtt_ms + 0.5) * 3 + 25 + 99) / 100 - 1;   /* (ceil(ms * 60 / 2000 + 0.25) - 1 in integers, as Arena's) */
+            return d < 2 ? 2 : d > RBN_ONLINE_DELAY_MAX ? RBN_ONLINE_DELAY_MAX : d;
+        }
+    }
     double one_way = rtt_ms / 2;
     int d = (int)(one_way / (1000.0 / 60) + 0.5) - 2;
     return d < 2 ? 2 : d > RBN_ONLINE_DELAY_MAX ? RBN_ONLINE_DELAY_MAX : d;

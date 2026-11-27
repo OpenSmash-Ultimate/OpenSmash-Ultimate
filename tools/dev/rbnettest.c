@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../runtime/hle_rb_net.h"
+#ifdef _WIN32
+static void rb_setenv(const char *k, const char *v) { char t[128]; snprintf(t, sizeof t, "%s=%s", k, v); _putenv(t); }
+#else
+static void rb_setenv(const char *k, const char *v) { setenv(k, v, 1); }
+#endif
 
 #define FRAMES 4000
 #define TICKS 6000
@@ -185,11 +190,18 @@ int main(int argc, char **argv) {
         static const struct { double rtt; int d; } k[] = {{0, 1}, {3, 1}, {14.9, 1}, {15, 2}, {44.9, 2}, {45, 3}, {48, 3}, {74.9, 3}, {75, 4}, {105, 5}, {165, 7}, {900, 8}, {-1, 1}};
         for (unsigned i = 0; i < sizeof k / sizeof *k; i++)
             if (rbn_delay_for_rtt(k[i].rtt) != k[i].d) { fprintf(stderr, "FAIL: delay for %.1f ms is %d, not %d\n", k[i].rtt, rbn_delay_for_rtt(k[i].rtt), k[i].d); return 1; }
-        /* (SSBU_RB_NET=online's: under 15 ms 1; else the one-way trip in frames less two, from 2 to 9) */
+        /* (SSBU_RB_AUTO_DELAY_V2=0, as 0.5.3: under 15 ms 1; else the one-way trip in frames less two, from 2 to 9) */
         static const struct { double rtt; int d; } o[] = {{0, 1}, {14.9, 1}, {15, 2}, {30, 2}, {40, 2}, {50, 2}, {83, 2}, {84, 2}, {100, 2}, {116, 2}, {149, 2}, {150, 3},
                                                           {199, 4}, {200, 4}, {240, 5}, {283, 6}, {300, 7}, {366, 9}, {900, 9}, {-1, 1}};
+        rb_setenv("SSBU_RB_AUTO_DELAY_V2", "0");
         for (unsigned i = 0; i < sizeof o / sizeof *o; i++)
-            if (rbn_online_delay_for_rtt(o[i].rtt) != o[i].d) { fprintf(stderr, "FAIL: online delay for %.1f ms is %d, not %d\n", o[i].rtt, rbn_online_delay_for_rtt(o[i].rtt), o[i].d); return 1; }
+            if (rbn_online_delay_for_rtt(o[i].rtt) != o[i].d) { fprintf(stderr, "FAIL: online delay (V2 off) for %.1f ms is %d, not %d\n", o[i].rtt, rbn_online_delay_for_rtt(o[i].rtt), o[i].d); return 1; }
+        /* (the default, SSBU Arena's Auto V2: ceil(RTT / 2 / 16.67 + 0.25) - 1, from 2 to 9; 1 under 15 ms) */
+        static const struct { double rtt; int d; } v[] = {{0, 1}, {14.9, 1}, {15, 2}, {60, 2}, {91, 2}, {92, 3}, {100, 3}, {125, 3}, {126, 4}, {150, 4}, {158, 4},
+                                                          {159, 5}, {191, 5}, {192, 6}, {200, 6}, {225, 6}, {226, 7}, {258, 7}, {259, 8}, {291, 8}, {292, 9}, {900, 9}, {-1, 1}};
+        rb_setenv("SSBU_RB_AUTO_DELAY_V2", "1");
+        for (unsigned i = 0; i < sizeof v / sizeof *v; i++)
+            if (rbn_online_delay_for_rtt(v[i].rtt) != v[i].d) { fprintf(stderr, "FAIL: online delay (V2) for %.1f ms is %d, not %d\n", v[i].rtt, rbn_online_delay_for_rtt(v[i].rtt), v[i].d); return 1; }
     }
     {   /* CHOICE: built and parsed back the same */
         RbnChoice c = {0, 3, 1, 1, 0xc100000000123456ull, {0}}, d;
