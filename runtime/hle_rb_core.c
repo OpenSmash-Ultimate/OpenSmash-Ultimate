@@ -1513,6 +1513,7 @@ static void net_deliver(u32 now, int force) {
     while (net_low - net_key0 < 1u << 20 && net_got[net_low - net_key0]) net_low++;
 }
 void rb_ring_memory(char *buf, size_t size);   /* (hle_rb_state.c) */
+static int early_send_on(void); static long long early_sends, early_skipped;   /* (SSBU_RB_EARLY_SEND, below) */
 static void net_report(void) {
     char name[64];
     {   char m[768]; rb_ring_memory(m, sizeof m); fprintf(stderr, "[rb] ring memory at the fight's end: %s\n", m); }
@@ -1539,6 +1540,9 @@ static void net_report(void) {
             rb_fiber_retried_ok, rb_fiber_refused, net_older);
     fprintf(stderr, "[rb] net check: %lld frames hashed again after a rollback with their pads all real, %lld of them DIFFERENT%s\n", net_again, net_again_bad,
             net_again_bad ? " (the passes are in the log: net check lines)" : "");
+    if (net_mode == 2)
+        fprintf(stderr, "[rb] early send (SSBU_RB_EARLY_SEND=%d): %lld pads sent at their frame's first read, %lld safe point sends left out as already sent\n",
+                early_send_on(), early_sends, early_skipped);
     fprintf(stderr, "[rb] loop mode done (delay %d, lag %d..%d, loss %d%%): %lld rollbacks (depths%s), %lld frames run again, caught up %.1f ms mean (max %.1f); "
             "%lld frames waited for pads (%.1f ms), %lld rollbacks too deep for the ring; %lld final hashes in %s\n",
             net_delay, net_lag_lo, net_lag_hi, net_loss, net_rollbacks, k ? hist : " none", net_rerun,
@@ -1830,6 +1834,34 @@ static void net_send(u32 key) {
     m.check_frame = net_final_frame(key, &h); m.check = (u32)h;
     size_t len = rbn_build(buf, sizeof buf, &m);
     if (len) { rbl_send(buf, (int)len); net_msgs_out++; net_bytes_s += (long long)len; net_msgs_s++; if ((long long)len > net_bytes_max_s) net_bytes_max_s = (long long)len; }
+}
+/* SSBU_RB_EARLY_SEND (default 1; 0 = as 0.5.3): this game's pad goes out at the frame's first read of it, not at the next safe
+ * point. The main loop runs: safe point K, the pads read for logic frame K (~1 ms in), the frame's work, the wait for the
+ * display, the GPU's commands, safe point K + 1 - and only there, after its save, was the pad read in frame K queued for
+ * K + 1 + delay and sent. Every pad left this PC a frame late (the wait and the save: ~15-20 ms), which the other game
+ * paid as a frame more of rollback on every wrong guess (field logs of 0.5.x: at a 40 ms round trip and delay 2 the
+ * rollbacks were 3-4 frames deep where the trip asks for 0-1). Now the first read of this game's own pad in a real pass of
+ * logic frame K (the main thread, the frame after safe point K) fixes it for K + 1 + delay - rbn_local, as the safe point
+ * would, so both games hold the same value - and sends it at once; the safe point K + 1 then finds it queued and sends
+ * nothing more for it (its acks go with the next one). Live controllers: the first read's value, not the frame's last
+ * (a few ms earlier). Nothing else changes: the queue, the guesses, the frame advantage (each message says the frame its
+ * sender runs, K here), the time sync, the handshake. =2: both sends (the early one and the safe point's). */
+static int early_on = -1;
+static u32 early_key;                    /* (the logic frame whose first read sent its pad; 0: none this fight) */
+static long long early_sends, early_skipped;
+static int early_send_on(void) {
+    if (early_on < 0) { const char *e = getenv("SSBU_RB_EARLY_SEND"); early_on = e && *e ? atoi(e) : 1; if (early_on < 0 || early_on > 2) early_on = 1; }
+    return early_on;
+}
+static void net_early_send(u32 key) {
+    if (!early_send_on() || !S.in_fight || !net_armed || !net_got || net_done || rb_catchup || net_resync_pending) return;
+    if (GetCurrentThreadId() != S.thread || key != pr_sp_lf || key == early_key || key < net_key0) return;
+    early_key = key;
+    rbn_local(key + 1, net_live == 1 ? net_live_pad : net_pad(net_local, key + 1));
+    u32 nw = rbn_local_newest();
+    if (net_sent_at[nw & (RBN_RING - 1)] != nw) { net_sent_at[nw & (RBN_RING - 1)] = nw; net_sent_ms[nw & (RBN_RING - 1)] = now_ms(); }
+    net_send(key);
+    early_sends++;
 }
 /* ---- SSBU_RB_STDBENCH: THE STANDARD ROLLBACK BENCH (test only; SSBU Arena's rb_bench.c, round 12, ported) --------------
  * SSBU_RB_STDBENCH=<warm>,<measured>,<stages>, with SSBU_RB=1, the loop mode (SSBU_RB_NET=loop,<delay>,<lag>,<lag>,0,<frames>)
@@ -2486,6 +2518,7 @@ static void net_step(Cpu *c, u64 frame) {
         memset(net_sent_at, 0, sizeof net_sent_at);
         rbl_stats(&net_link_base[0], &net_link_base[1], &net_link_base[2]);
         net_key0 = net_low = key; net_t0 = now_ms(); net_done = 0;
+        early_key = 0; early_sends = early_skipped = 0;   /* (SSBU_RB_EARLY_SEND) */
         we_sp_ok = 0;
         pace_reset(key);
         fprintf(stderr, "[rb] loop mode: fight starts at logic frame %u\n", key);
@@ -2747,7 +2780,8 @@ static void net_step(Cpu *c, u64 frame) {
         if (net_sent_at[nw & (RBN_RING - 1)] != nw) { net_sent_at[nw & (RBN_RING - 1)] = nw; net_sent_ms[nw & (RBN_RING - 1)] = now_ms(); }
         net_receive(key);
         net_compare(key);
-        net_send(key);
+        if (early_send_on() == 1 && early_key && early_key + 1 == key) early_skipped++;   /* (SSBU_RB_EARLY_SEND: sent at the frame's first read) */
+        else net_send(key);
         net_gone_check(key, 0);
         rb_io_gate(key);   /* (SSBU_RB_IO_BARRIER: a guest thread's irreversible event let go here) */
         if (!rbn_can_run(key + 1)) {
@@ -2987,6 +3021,7 @@ static int net_pad_for(u32 id, u32 key, u64 *buttons, i32 *lx, i32 *ly, i32 *rx,
         RbnPad l = {*buttons, (int16_t)*lx, (int16_t)*ly, (int16_t)*rx, (int16_t)*ry, (int16_t)*lt, (int16_t)*rt};
         net_live_pad = rbn_rest(l);
     }
+    if (net_mode == 2 && (int)id == net_local && rb_fast <= 0) net_early_send(key);   /* (SSBU_RB_EARLY_SEND) */
     if ((int)id >= (net_mode == 2 ? net_n : 2)) return 0;
     RbnPad p = net_mode == 2 ? rbn_get((int)id, key, NULL) : id == 0 ? net_pad(0, key) : rbn_get(1, key, NULL);
     {   /* (tests, #389: SSBU_RB_TEST_SPLIT=<logic frame>[,<frames>]: on player 1's game, those frames
