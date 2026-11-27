@@ -1222,6 +1222,26 @@ def plugins_first(jobs=None):
         return False
 
 
+RELEASE_TAG = re.compile(r"v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?")
+
+
+def prebuilt_runtime_first(dll, env=os.environ):
+    """(Windows, --game-dll, a release install: the launcher names its tag in OPENSMASH_RELEASE_TAG) Tell
+    tools/recomp.py the release whose prebuilt runtime to take when only the runtime is to be made again
+    (SSBU_PREBUILT_RUNTIME): the game library stays, the release's runtime is put in place, nothing is compiled.
+    The installer put that runtime over the one built here after every build anyway (tools/runtime_fetch.py).
+    SSBU_PREBUILT_RUNTIME=0: the runtime is compiled here first, as before. Returns the tag, or None."""
+    if not dll or LINUX or MACOS:
+        return None
+    if env.get("SSBU_PREBUILT_RUNTIME", "").strip():   # (0: off; a tag: that one)
+        return None if env["SSBU_PREBUILT_RUNTIME"].strip() == "0" else env["SSBU_PREBUILT_RUNTIME"].strip()
+    tag = env.get("OPENSMASH_RELEASE_TAG", "").strip()
+    if not RELEASE_TAG.fullmatch(tag):
+        return None
+    env["SSBU_PREBUILT_RUNTIME"] = tag
+    return tag
+
+
 def build(a):
     log("[1/9] Check the tools")
     compiler = check_tools()   # (a CompilerDownload when there is no compiler yet: it downloads during steps 3-8)
@@ -1386,6 +1406,7 @@ def build(a):
                 log("  (no SDL3 in deps\\SDL3: Xbox controllers and the keyboard only - setup guide's SDL3 step)")
             log("  the first build takes from 30 minutes to a few hours, later ones minutes unless the compiler, its flags or "
                 "runtime/recomp.h changed; if it stops, run this again to carry on")
+            prebuilt_runtime_first(dll)
             run([sys.executable, os.path.join("tools", "recomp.py"), "all", os.path.join("dump", "exefs"),
                  "--out", "build", "--jobs", str(jobs), *(["--gen-jobs", str(gen_jobs)] if gen_jobs != jobs else []),
                  *(["--game-dll"] if dll else [])],

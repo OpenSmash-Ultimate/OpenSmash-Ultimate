@@ -1191,6 +1191,18 @@ NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "
              "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_opensmash.ps1", "tools/install_windowsmash.ps1",
              "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py",
              "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat")
+# (SSBU_UPDATE_GATE, on unless 0) Nor these: the commit the sources are at, which the installer's updater writes last,
+# so at EVERY update (tools/install_opensmash.ps1 Update-FromZip) - with it, an update that changed only the launcher
+# rebuilt: build_game.py's steps, the plugins built in again and their test boot (a minute or more) - and the
+# launchers', the releases' and the prebuilt runtime's own tools. 0: only the list above, as before.
+NOT_BUILT_UPDATE = ("tools/source_version.txt", "tools/release/", "tools/build_avalonia.", "tools/build_launcher.ps1",
+                    "tools/publish_avalonia.py", "tools/rebuild_avalonia_after_update.", "tools/rebuild_launcher_after_update.ps1",
+                    "tools/rebuild-all.ps1", "tools/launcher.ps1", "tools/launcher_fetch.py", "tools/make_recomplauncher_zip.py",
+                    "tools/recomplauncher_prepare.ps1", "tools/runtime_fetch.py", "tools/yuzu_client.ps1",
+                    "tools/yuzu_client_deps.py", "tools/latency_trace.py", "tools/runahead_trace.py",
+                    "tools/Unlock-All-Fighters.ps1")
+if os.environ.get("SSBU_UPDATE_GATE", "1").strip() != "0":
+    NOT_BUILT += NOT_BUILT_UPDATE
 
 
 def plugin_refresh_reason(tree):
