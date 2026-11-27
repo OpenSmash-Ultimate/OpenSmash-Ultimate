@@ -305,6 +305,29 @@ static void print_frames(void **frames, int n, int from_pc) {
     }
 }
 
+#include "crash_blame.h"   /* (plugin_module: SSBU_CRASH_BLAME, below) */
+/* After the crash report's first line: the plugin its innermost guest frames are in, when one of the first two is a
+ * plugin's - " - in plugin X (X+0x...)" when the fault is in its code, " - in code called from plugin X (...)" when it
+ * called the code that faulted (the game's or the runtime's). Field reports of 0.5.1-0.5.3 had a mod's plugin there
+ * (its own code, or the game's called from it with what it passed) in about one crash in five; the launcher reads it
+ * (OpenSmash.Core CrashBlame.cs) and suggests turning that mod off. Only the innermost two: a plugin deeper down is
+ * on almost every stack of a modded game (Smashline runs the fighters' scripts) and says nothing. */
+static void crash_blame(void **frames, int n, int from_pc) {
+    const char *e = getenv("SSBU_CRASH_BLAME");
+    if (e && e[0] == '0') return;
+    char name[96];
+    for (int i = 0, seen = 0; i < n && seen < 2; i++) {
+        u64 guest = guest_of_frame((u64)frames[i], i == 0 && from_pc);
+        if (!guest) continue;
+        const char *d = rt_describe(guest, name, sizeof name), *plus = strchr(d, '+');
+        if (plus && plugin_module(d, (size_t)(plus - d))) {
+            out(" - %s plugin %.*s (%s)", i == 0 && from_pc ? "in" : "in code called from", (int)(plus - d), d, d);
+            return;
+        }
+        seen++;
+    }
+}
+
 void rt_backtrace(void) {
     void *frames[62];
     print_frames(frames, CaptureStackBackTrace(1, 62, frames, NULL), 0);
@@ -1139,10 +1162,22 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     char name[96], report[MAX_PATH];
     fflush(stdout);
     report_open("crash", report, sizeof report);
+    /* (the guest frames, now: the first line names a plugin among them, crash_blame. Taken under a guard - a stack
+     * too broken to walk leaves them out, and the report goes on) */
+    void *frames[62];
+    volatile int nframes = 0;
+    rt_probing = 1;
+    __try {
+        nframes = unwind(*e->ContextRecord, frames, 62);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        nframes = 0;
+    }
+    rt_probing = 0;
     out("\n*** host exception %#lx%s during %s", code, code == EXCEPTION_STACK_OVERFLOW ? " (stack overflow)" : "", phase);
     if (code == EXCEPTION_ACCESS_VIOLATION)
         out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" : e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
             rt_describe(e->ExceptionRecord->ExceptionInformation[1], name, sizeof name));
+    crash_blame(frames, nframes, 1);
     out("\n");
     if (rt_romfs_warning[0]) out("%s\n", rt_romfs_warning);   /* (hle_fs.c: wrong game data can be the cause) */
     /* (an address in guest memory that is not mapped: what the kernel's map says, and its recent changes there - the
@@ -1195,8 +1230,7 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
         }
     }
     gfx_report_compiles(out_line);   /* (a fault in the driver's shader compiler names the program) */
-    void *frames[62];
-    print_frames(frames, unwind(*e->ContextRecord, frames, 62), 1);   /* from the faulting frame */
+    print_frames(frames, nframes, 1);   /* from the faulting frame (taken above) */
     if (fault_addr) {   /* (the other threads too: who else was at work on that memory) */
         out("\nGuest threads:\n");
         kernel_thread_states(out_line);
@@ -1381,6 +1415,13 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
     u64 sp = (u64)uc->uc_mcontext.gregs[REG_RSP];
     int overflow = sig == SIGSEGV && addr + 65536 > sp && addr < sp + 65536;
 #endif
+    void *frames[64];
+#ifdef __APPLE__   /* (from the faulting context: a leaf function's caller is in the link register) */
+    int n = walk_frames(pc, uc->uc_mcontext->__ss.__lr, uc->uc_mcontext->__ss.__fp, frames, 64), from = 0, from_pc = 1;
+#else
+    int n = backtrace(frames, 64), from = 0, from_pc = 0;
+    for (int i = 0; i < n; i++) if ((u64)frames[i] == pc) { from = i; from_pc = 1; break; }   /* (the faulting frame onwards) */
+#endif
     out("\n*** host exception (signal %d: %s%s) during %s", sig, sig == SIGSEGV ? "access violation" : sig == SIGBUS ? "bus error" :
         sig == SIGILL ? "illegal instruction" : sig == SIGFPE ? "arithmetic" : sig == SIGTRAP ? "trap" : sig == SIGABRT ? "abort" : "?",
         overflow ? ", stack overflow" : "", phase);
@@ -1392,17 +1433,11 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
 #else
     if (sig == SIGSEGV || sig == SIGBUS) out(": %s address %s", writing ? "writing" : "reading", rt_describe(addr, name, sizeof name));
 #endif
+    crash_blame(frames + from, n - from, from_pc);
     out("\n");
     if (rt_romfs_warning[0]) out("%s\n", rt_romfs_warning);   /* (hle_fs.c: wrong game data can be the cause) */
     out("host pc %#llx (thread %d %s):\n", pc, (int)me, rt_thread_description(me));
     host_frame("  ", (void *)pc);
-    void *frames[64];
-#ifdef __APPLE__   /* (from the faulting context: a leaf function's caller is in the link register) */
-    int n = walk_frames(pc, uc->uc_mcontext->__ss.__lr, uc->uc_mcontext->__ss.__fp, frames, 64), from = 0, from_pc = 1;
-#else
-    int n = backtrace(frames, 64), from = 0, from_pc = 0;
-    for (int i = 0; i < n; i++) if ((u64)frames[i] == pc) { from = i; from_pc = 1; break; }   /* (the faulting frame onwards) */
-#endif
     for (int i = from + 1; i < n && i < from + 24; i++) host_frame("  host frame ", frames[i]);
     gfx_report_compiles(out_line);   /* (a fault in the shader compiler names the program) */
     print_frames(frames + from, n - from, from_pc);

@@ -147,6 +147,14 @@ namespace OpenSmash.Launcher
             {
                 await GameFolder.Ended(proc);
                 pass?.Dispose();
+                // (a crash in a mod's plugin: which mod, and the offer to turn it off - OpenSmash.Core CrashBlame.cs;
+                // signed in or not; OPENSMASH_CRASH_MOD_HINT=0: nothing, as before)
+                var hint = OpenSmash.Core.CrashBlame.Hint(_repo, started);
+                if (hint.Text != null)
+                {
+                    Updater.Log(_repo, "crash: " + hint.Text);
+                    try { BeginInvoke(new Action(() => CrashModHint(hint.Mod, hint.Text))); } catch (InvalidOperationException) { }
+                }
                 if (_account == null) return;
                 bool on = !FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt"));
                 var crash = CrashReport.SendIfAnyAsync(_account, _repo, started, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
@@ -155,6 +163,21 @@ namespace OpenSmash.Launcher
                 try { BeginInvoke(new Action(() => _ = AccountLoadGsp())); } catch (InvalidOperationException) { }   // (the GSP the game just earned)
                 try { await Task.WhenAll(crash, perf); } catch { }
             });
+        }
+
+        /// <summary>after a crash in a plugin (CrashBlame.Hint): the message, and when the mod is on in the list, the offer to
+        /// turn it off (the same as its switch in Mods)</summary>
+        void CrashModHint(string? mod, string text)
+        {
+            var on = mod == null ? null : _mods.FirstOrDefault(m => m.Name == mod && m.Enabled);
+            if (on == null || _modsBusy)
+            {
+                UiLocale.Message(this, text, "OpenSmash", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (UiLocale.Message(this, text + "\n\n" + UiLocale.Text("Turn that mod off now? You can turn it on again in Mods."), "OpenSmash",
+                                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                ToggleMod(new[] { on.Name });
         }
 
         bool ActivateAccountHit(string id)
