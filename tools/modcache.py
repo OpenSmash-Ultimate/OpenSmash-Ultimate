@@ -124,6 +124,17 @@ def meaning(name, data):
     return ast.dump(tree, annotate_fields=True, include_attributes=False).encode()
 
 
+_MEANINGS = {}
+
+
+def _meaning_of(name, data):
+    """meaning()'s digest, once per source text in a run (module_fingerprint asks again for each module with hooks)."""
+    key = (name, hashlib.sha256(data).digest())
+    if key not in _MEANINGS:
+        _MEANINGS[key] = hashlib.sha256(meaning(name, data)).digest()
+    return _MEANINGS[key]
+
+
 def fingerprint(extra, legacy=None):
     """The tools' fingerprint: the generator's sources and `extra` (the runtime's set of
     native functions and wraps, and tools/hooks.txt's entries, which change what is generated).
@@ -135,7 +146,7 @@ def fingerprint(extra, legacy=None):
     for n in GENERATOR:
         with open(os.path.join(TOOLS, n), "rb") as f:
             data = f.read()
-        h.update(n.encode() + b"\0" + (data.replace(b"\r\n", b"\n") if legacy else meaning(n, data)) + b"\0")
+        h.update(n.encode() + b"\0" + (data.replace(b"\r\n", b"\n") if legacy else _meaning_of(n, data)) + b"\0")
     h.update(extra.encode())
     return h.hexdigest()[:16]
 
