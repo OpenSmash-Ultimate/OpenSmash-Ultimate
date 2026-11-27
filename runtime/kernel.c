@@ -22,6 +22,7 @@
 #include "kernel_watch.h"   /* (the write watch shared with the rollback ring) */
 #include "fight_test.h"   /* (SSBU_FIXED_SEED) */
 #include "sleep.h"   /* (svcSleepThread) */
+#include "rb_dcdefer.h"   /* (SSBU_RB_DCDEFER's page bits) */
 
 #ifdef __linux__
 #include <sys/resource.h>   /* (RLIMIT_NICE: see "priorities and cores") */
@@ -773,7 +774,9 @@ void kernel_mem_event(char kind, u64 addr, u64 size) {
 }
 static const char *mem_event_name(char k) {
     return k == 'C' ? "committed" : k == 'D' ? "decommitted (UnmapPhysicalMemory)" : k == 'U' ? "unmapped (UnmapMemory)" :
-           k == 'L' ? "pages decommitted by a rollback load, within" : k == 'R' ? "pages recommitted by a rollback load, within" : "?";
+           k == 'L' ? "pages decommitted by a rollback load, within" : k == 'R' ? "pages recommitted by a rollback load, within" :
+           k == 'K' ? "given back (UnmapPhysicalMemory), KEPT COMMITTED in the rollback fight (SSBU_RB_DCDEFER)" :
+           k == 'M' ? "pages a rollback load gave back, KEPT COMMITTED (SSBU_RB_DCDEFER), within" : "?";
 }
 /* (host.c, a crash's report) What the kernel's map and Windows say about guest address g, and the recent changes near it.
  * 0, nothing said: g is in none of the guest's reservations (a host pointer, 0xffff...: the report says so). */
@@ -828,6 +831,122 @@ static void *commit(u64 at, u64 size, const char *what) {
     void *p = VirtualAlloc(G2H(at), size, MEM_COMMIT, PAGE_READWRITE);
     if (!p) rt_fatal("kernel: cannot commit %llu KiB at %#llx for %s (error %lu)", size >> 10, at, what, (unsigned long)GetLastError());
     return p;
+}
+
+/* ---- (0.5.4) SSBU_RB_DCDEFER: memory the game gives back, kept committed during a rollback fight ----
+ * Crash reports of 0.5.1 and 0.5.2 (online matches): a thread that a rollback load does not put back - the gpu
+ * thread copying a binding, a task worker - read guest memory that was "reserved, not committed": given back
+ * with svc UnmapPhysicalMemory by the game (jemalloc's purge, from whatever thread frees), or decommitted by a
+ * rollback load because the loaded state had not committed it yet. SSBU Arena 0.2.77 (SSBU_RB_DCDEFER) keeps
+ * such pages committed for the length of a rollback match; this is the same idea on this kernel and its ring.
+ * While a rollback fight is on (kernel_rb_defer_fight, hle_rb_core.c), an UnmapPhysicalMemory of the alias area
+ * does all it did (the GPU's queue and the renderer told, the ring told, the region gone from the memory map) but
+ * leaves the pages committed with their bytes; a rollback load that would decommit a page the loaded state did
+ * not have (hle_rb_state.c) keeps it the same way. Two bits a page: KEPT (given back, still committed) and ZERO
+ * (given back in this fight). A MapPhysicalMemory clears the ZERO pages it maps anew (not in a region of the
+ * memory map before it), as a fresh commit is zero pages - also after a load brought back a frame from before an
+ * earlier clear, which is why ZERO stays for the whole fight. At the fight's end the KEPT pages the game has not
+ * taken again are decommitted for real (SSBU_RB_DCDEFER=2: kept until the game takes them again). The guest sees
+ * what it saw before: the region gone from its map, zeros when it maps the range again. Outside a rollback fight,
+ * outside the alias area or unaligned: decommitted at once, as before. SSBU_RB_DCDEFER=0: off (as 0.5.3). */
+static int dcd_mode = -1;
+static volatile int dcd_fight;
+static DcDefer dcd = {.lo = ~0ull};   /* (the bits: rb_dcdefer.h) */
+static SRWLOCK dcd_lock = SRWLOCK_INIT;
+#define DCD_PAGES (ALIAS_SIZE >> 12)
+static int dcd_mode_now(void) {
+    if (dcd_mode < 0) { const char *e = getenv("SSBU_RB_DCDEFER"); dcd_mode = e && *e ? atoi(e) : 1; if (dcd_mode < 0 || dcd_mode > 2) dcd_mode = 1; }
+    return dcd_mode;
+}
+/* The alias pages [*i0, *i1) of [at, at + size), whole pages of the alias area only. */
+static int dcd_pages_of(u64 at, u64 size, u64 *i0, u64 *i1) {
+    if (!size || (at & 0xFFF) || (size & 0xFFF) || at < ALIAS_BASE || at >= ALIAS_BASE + ALIAS_SIZE || size > ALIAS_BASE + ALIAS_SIZE - at) return 0;
+    *i0 = (at - ALIAS_BASE) >> 12; *i1 = *i0 + (size >> 12);
+    return 1;
+}
+static int dcd_maps(void) {   /* (made on the first page kept: 2 MiB of address space each, pages committed as touched) */
+    if (!dcd.kept) dcd.kept = VirtualAlloc(NULL, DCD_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!dcd.zero) dcd.zero = VirtualAlloc(NULL, DCD_PAGES / 8, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    return dcd.kept && dcd.zero;
+}
+/* (svc UnmapPhysicalMemory, klock held) 1: [at, at + size) is kept committed (the caller does not decommit it) */
+static int dcd_keep(u64 at, u64 size) {
+    u64 i0, i1;
+    if (!dcd_fight || dcd_mode_now() <= 0 || !dcd_pages_of(at, size, &i0, &i1)) return 0;
+    AcquireSRWLockExclusive(&dcd_lock);
+    int ok = dcd_fight && dcd_maps();
+    if (ok) { dcd_mark(&dcd, i0, i1); dcd.calls++; dcd.pages += (long long)(i1 - i0); }
+    ReleaseSRWLockExclusive(&dcd_lock);
+    return ok;
+}
+/* (svc UnmapPhysicalMemory, decommitted for real) its pages are not kept any more */
+static void dcd_forget(u64 at, u64 size) {
+    u64 i0, i1;
+    if (!dcd.kept || !dcd_pages_of(at, size, &i0, &i1)) return;
+    AcquireSRWLockExclusive(&dcd_lock);
+    dcd_unmark(&dcd, i0, i1);
+    ReleaseSRWLockExclusive(&dcd_lock);
+}
+/* (klock held) Is alias page i in a region of the memory map? */
+static int dcd_mapped(uint64_t i, void *ctx) {
+    (void)ctx;
+    u64 a = ALIAS_BASE + (i << 12);
+    u32 lo = 0, hi = region_count;
+    while (lo < hi) { u32 m = (lo + hi) / 2; if (regions[m].base <= a) lo = m + 1; else hi = m; }
+    return lo && a < regions[lo - 1].base + regions[lo - 1].size;
+}
+static void dcd_clear(uint64_t i, uint64_t j, void *ctx) { (void)ctx; memset(G2H(ALIAS_BASE + (i << 12)), 0, (size_t)((j - i) << 12)); }
+/* (svc MapPhysicalMemory, after the commit and before the region is added; klock held) The pages given back in
+ * this fight that it maps anew are cleared: zeros, as a fresh commit. A plain write, which the write watch and
+ * the state map see as any other (the commit's rb_mem_note has the ring take the range whole anyway). */
+static void dcd_taken(u64 at, u64 size) {
+    u64 i0, i1;
+    if (!dcd.zero || !dcd_pages_of(at, size, &i0, &i1)) return;
+    AcquireSRWLockExclusive(&dcd_lock);
+    dcd_take(&dcd, i0, i1, dcd_fight, dcd_mapped, dcd_clear, NULL);
+    ReleaseSRWLockExclusive(&dcd_lock);
+}
+/* (hle_rb_state.c: a rollback load is about to decommit page p, which the loaded state did not have) 1: kept
+ * committed instead (the caller leaves it as it is). The guest threads are held: no system call runs meanwhile. */
+int kernel_rb_keep_page(void *p) {
+    u64 i0, i1;
+    if (!dcd_fight || dcd_mode_now() <= 0 || !dcd_pages_of(H2G(p), 0x1000, &i0, &i1)) return 0;
+    AcquireSRWLockExclusive(&dcd_lock);
+    int ok = dcd_fight && dcd_maps();
+    if (ok) { dcd_mark(&dcd, i0, i1); dcd.load_pages++; }
+    ReleaseSRWLockExclusive(&dcd_lock);
+    return ok;
+}
+static void dcd_release(uint64_t i, uint64_t j, void *ctx) {   /* (the fight's end: as UnmapPhysicalMemory would have) */
+    (void)ctx;
+    u64 at = ALIAS_BASE + (i << 12), size = (j - i) << 12;
+    gpu_memory_unmapping(at, size);
+    watch_decommitting(at, size);
+    rb_mem_note(at, size);
+    kernel_mem_event('D', at, size);
+    VirtualFree(G2H(at), size, MEM_DECOMMIT);
+}
+/* (hle_rb_core.c, at a rollback fight's start (1) and end (0), on the main thread) At the end the kept pages the
+ * game has not taken again are decommitted for real, as UnmapPhysicalMemory would have (=2: left for the game). */
+void kernel_rb_defer_fight(int on) {
+    if (dcd_mode_now() <= 0) return;
+    if (on) { dcd_fight = 1; return; }
+    if (!dcd_fight) return;
+    EnterCriticalSection(&klock);   /* (no MapPhysicalMemory / UnmapPhysicalMemory meanwhile) */
+    AcquireSRWLockExclusive(&dcd_lock);
+    dcd_fight = 0;
+    long long freed = dcd.kept ? dcd_end(&dcd, dcd_mode, dcd_mapped, dcd_release, NULL) : 0;
+    DcDefer s = dcd;
+    dcd.calls = dcd.pages = dcd.load_pages = dcd.zeroed = dcd.zero_calls = 0;
+    dcd.peak = dcd.now;
+    ReleaseSRWLockExclusive(&dcd_lock);
+    LeaveCriticalSection(&klock);
+    if (!s.calls && !s.load_pages && !s.zeroed && !freed) return;
+    fprintf(stderr, "[rb] memory the game gave back in the fight kept committed (SSBU_RB_DCDEFER=%d): %lld give-backs, %.1f MB, "
+                    "and %lld pages a load would have decommitted; at most %.1f MB at once; %lld pages cleared when mapped again "
+                    "(%lld times); decommitted now %.1f MB%s\n",
+            dcd_mode, s.calls, s.pages * 4096.0 / 1048576.0, s.load_pages, s.peak * 4096.0 / 1048576.0, s.zeroed, s.zero_calls,
+            freed * 4096.0 / 1048576.0, dcd_mode == 2 ? " (=2: the rest stays until the game maps it)" : "");
 }
 
 /* ---- thread lifetime ---------------------------------------------------------------
@@ -1459,18 +1578,21 @@ static void system_call(Cpu *c, u32 n) {
     }
     case 0x2C:     /* MapPhysicalMemory(address, size): back part of the alias area with memory */
         commit(x[0], x[1], "physical memory");
+        dcd_taken(x[0], x[1]);   /* (SSBU_RB_DCDEFER: pages given back and kept committed are zeros again, as a fresh commit) */
         kernel_add_region(x[0], x[1], GM_HEAP, 3);
         x[0] = R_OK;
         break;
-    case 0x2D:     /* UnmapPhysicalMemory(address, size) */
+    case 0x2D: {   /* UnmapPhysicalMemory(address, size) */
+        int kept = dcd_keep(x[0], x[1]);   /* (SSBU_RB_DCDEFER: in a rollback fight, left committed until it ends) */
         gpu_memory_unmapping(x[0], x[1]);   /* (queued GPU work and the renderer may read it) */
         watch_decommitting(x[0], x[1]);
         rb_mem_note(x[0], x[1]);
-        kernel_mem_event('D', x[0], x[1]);
-        VirtualFree(G2H(x[0]), x[1], MEM_DECOMMIT);
+        kernel_mem_event(kept ? 'K' : 'D', x[0], x[1]);
+        if (!kept) { dcd_forget(x[0], x[1]); VirtualFree(G2H(x[0]), x[1], MEM_DECOMMIT); }
         unmap_range(x[0], x[1]);
         x[0] = R_OK;
         break;
+    }
     case 0x34: x[0] = wait_for_address(c, x[0], (u32)x[1], (i32)x[2], (i64)x[3]); break;
     case 0x35: x[0] = signal_to_address(x[0], (u32)x[1], (i32)x[2], (i32)x[3]); break;
     case 0x15: {   /* CreateTransferMemory(address, size, permission) -> handle: lent memory stays where it is */

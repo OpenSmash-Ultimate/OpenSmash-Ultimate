@@ -333,6 +333,7 @@ static void safe_point(Cpu *c, uintptr_t sp) {
             rb_catchup = 0;
             { void rb_release_held(void); rb_release_held(); }
             if (net_mode == 2) { void rb_ring_drop(void); rb_ring_drop(); }   /* (the GO! freeze: no undo of the next loading at the next fight's first save) */
+            { void kernel_rb_defer_fight(int on); kernel_rb_defer_fight(0); }   /* (kernel.c SSBU_RB_DCDEFER: what the game gave back in the fight, decommitted now) */
             if (hold) sd_hold_arm(c);
         } else if (sd_holding) sd_hold_frame(c);
         return;
@@ -347,6 +348,8 @@ static void safe_point(Cpu *c, uintptr_t sp) {
          * for the other threads at each frame - the cost a player saw after turning run-ahead off, until a restart) */
         S.idle = rb_idle();
         if (!S.idle) { void rb_state_map_fight(int on); rb_state_map_fight(1); }   /* (hle_rb_state.c: the fight's first save turns the state map on) */
+        /* (kernel.c SSBU_RB_DCDEFER: an online rollback fight keeps what the game gives back committed until it ends) */
+        if (!S.idle && net_mode == 2) { void kernel_rb_defer_fight(int on); kernel_rb_defer_fight(1); }
         else fprintf(stderr, "[rb] this fight needs no savestates (run-ahead off, no rollback): no per-frame work\n");
         summary("fight start");   /* (clears the window; its numbers are all zero) */
         if (net_mode == 2) net_gone_reset();

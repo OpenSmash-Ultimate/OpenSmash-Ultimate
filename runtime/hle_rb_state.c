@@ -62,16 +62,19 @@ int kernel_rb_strict(void);
 void kernel_mem_event(char kind, u64 addr, u64 size);   /* (kernel.c: the memory map's changes, for a crash report) */
 /* (a load's decommits and recommits: one entry each a load, the range they fell in, so they don't push the game's own
  * changes out of kernel.c's ring) */
-static u64 ld_ev[2][2];   /* [L, R][lo, hi], guest */
+static u64 ld_ev[3][2];   /* [L, R, M][lo, hi], guest (M: kept committed instead, SSBU_RB_DCDEFER) */
 static void ld_ev_note(int k, const void *p) {
     u64 g = H2G(p);
     if (!ld_ev[k][1] || g < ld_ev[k][0]) ld_ev[k][0] = g;
     if (g + 0x1000 > ld_ev[k][1]) ld_ev[k][1] = g + 0x1000;
 }
 static void ld_ev_flush(void) {
-    for (int k = 0; k < 2; k++)
-        if (ld_ev[k][1]) { kernel_mem_event(k ? 'R' : 'L', ld_ev[k][0], ld_ev[k][1] - ld_ev[k][0]); ld_ev[k][0] = ld_ev[k][1] = 0; }
+    for (int k = 0; k < 3; k++)
+        if (ld_ev[k][1]) { kernel_mem_event("LRM"[k], ld_ev[k][0], ld_ev[k][1] - ld_ev[k][0]); ld_ev[k][0] = ld_ev[k][1] = 0; }
 }
+/* (kernel.c, SSBU_RB_DCDEFER) 1: page p, which the loaded state did not have, stays committed during the rollback
+ * fight (the game sees it as given back: the loaded memory map has no region there; zeros when it maps it again) */
+int kernel_rb_keep_page(void *p);
 void fiber_rb_load(const void *p, const u64 *live, u32 nlive, u32 *skipped);
 void fiber_rb_free(void *p);
 void *setjmp_rb_save(u32 *count);
@@ -857,9 +860,8 @@ static void undo_apply(const Undo *u, int part) {
         u32 k = (u32)((p - c->base) >> 12);
         if (u->how[i] == U_ABSENT) {
             gpu_memory_unmapping((u64)(uintptr_t)p, 0x1000);
-            ld_ev_note(0, p);
-            VirtualFree(p, 0x1000, MEM_DECOMMIT);
-            sm_gone(p);
+            if (kernel_rb_keep_page(p)) ld_ev_note(2, p);   /* (SSBU_RB_DCDEFER: kept committed, its protection as it is) */
+            else { ld_ev_note(0, p); VirtualFree(p, 0x1000, MEM_DECOMMIT); sm_gone(p); }
             set_present(c, k, 0);
             continue;
         }
@@ -921,9 +923,8 @@ static void settle_page(u8 *p, int now, int to_shadow) {
             memcpy(p, shadow_page(c, p), 0x1000);
         } else if (now) {
             gpu_memory_unmapping((u64)(uintptr_t)p, 0x1000);
-            ld_ev_note(0, p);
-            VirtualFree(p, 0x1000, MEM_DECOMMIT);
-            sm_gone(p);
+            if (kernel_rb_keep_page(p)) ld_ev_note(2, p);   /* (SSBU_RB_DCDEFER: kept committed, its protection as it is) */
+            else { ld_ev_note(0, p); VirtualFree(p, 0x1000, MEM_DECOMMIT); sm_gone(p); }
         } else return;
     }
     mstat.whole_pages++;
