@@ -290,9 +290,35 @@ def module_of(p, source, record, prefer=None):
 
 def c_stale(table):
     """Whether a plugin's C (its g_module.c) is missing or older than the recompiler: a fix made in it
-    since reaches the plugin only when its C is made again."""
+    since reaches the plugin only when its C is made again. (SSBU_GEN_FINGERPRINT, on unless 0) Older than its
+    files but made by a recompiler that does the same (tools/modcache.py meaning: an update that changed only
+    recomp.py's link step, a comment or a message) is current: generator.txt beside it says which one made it.
+    Without that, every mod plugin was translated again at every update that touched recomp.py. 0: by date only."""
     made_by = max(os.path.getmtime(os.path.join(HERE, n)) for n in RECOMPILER if os.path.exists(os.path.join(HERE, n)))
-    return not os.path.exists(table) or os.path.getmtime(table) < made_by
+    if not os.path.exists(table):
+        return True
+    import modcache
+    if not modcache.by_meaning():
+        return os.path.getmtime(table) < made_by
+    mark = os.path.join(os.path.dirname(table), "generator.txt")
+    now = modcache.fingerprint("plugin C", legacy=False)
+    if os.path.getmtime(table) >= made_by:   # (made by these very files: say so, for a later recompiler that does the same)
+        try:
+            with open(mark, encoding="utf-8") as f:
+                if f.read().strip() == now:
+                    return False
+        except OSError:
+            pass
+        try:
+            modcache.replace_file(mark, now + "\n")
+        except OSError:
+            pass
+        return False
+    try:
+        with open(mark, encoding="utf-8") as f:
+            return f.read().strip() != now
+    except OSError:
+        return True
 
 
 def build_jobs():
@@ -1191,6 +1217,18 @@ NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "
              "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_opensmash.ps1", "tools/install_windowsmash.ps1",
              "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py",
              "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat")
+# (SSBU_UPDATE_GATE, on unless 0) Nor these: the commit the sources are at, which the installer's updater writes last,
+# so at EVERY update (tools/install_opensmash.ps1 Update-FromZip) - with it, an update that changed only the launcher
+# rebuilt: build_game.py's steps, the plugins built in again and their test boot (a minute or more) - and the
+# launchers', the releases' and the prebuilt runtime's own tools. 0: only the list above, as before.
+NOT_BUILT_UPDATE = ("tools/source_version.txt", "tools/release/", "tools/build_avalonia.", "tools/build_launcher.ps1",
+                    "tools/publish_avalonia.py", "tools/rebuild_avalonia_after_update.", "tools/rebuild_launcher_after_update.ps1",
+                    "tools/rebuild-all.ps1", "tools/launcher.ps1", "tools/launcher_fetch.py", "tools/make_recomplauncher_zip.py",
+                    "tools/recomplauncher_prepare.ps1", "tools/runtime_fetch.py", "tools/yuzu_client.ps1",
+                    "tools/yuzu_client_deps.py", "tools/latency_trace.py", "tools/runahead_trace.py",
+                    "tools/Unlock-All-Fighters.ps1")
+if os.environ.get("SSBU_UPDATE_GATE", "1").strip() != "0":
+    NOT_BUILT += NOT_BUILT_UPDATE
 
 
 def plugin_refresh_reason(tree):

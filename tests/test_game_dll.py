@@ -297,6 +297,7 @@ class WindowsLink(made_up.Folder):
         "nothing that goes into the game changed"), and a run after this one would skip the link and say done."""
         self.link(True)
         self.assertTrue(self.exe.exists() and self.dll.exists())
+        made_up.write(self.module / 'g0000.obj', 'object compiled again\n')   # (else the library is kept: library_kept)
 
         def link(objs, exe, options=()):
             Path(exe).write_bytes(b'MZ')
@@ -312,6 +313,78 @@ class WindowsLink(made_up.Folder):
         ok, _runs = self.link(True)   # (the next run: nothing to compile, both linked)
         self.assertTrue(ok, self.said)
         self.assertTrue(self.exe.exists() and self.dll.exists())
+
+    def test_a_runtime_change_keeps_the_library(self):
+        """(SSBU_KEEP_GAME_DLL) A runtime change compiles and links the program again, not the library: its objects are
+        the ones its last link was made from. It is dated now, as a link would leave it (build_game.py's build_is_current).
+        An object compiled again links it again; SSBU_KEEP_GAME_DLL=0 links it every time, as before."""
+        self.link(True)
+        made_up.write(self.runtime / 'host.c', '#include "host.h"\nint host = 2;\n')
+        before = self.dll.stat().st_mtime_ns
+        os.utime(self.dll, ns=(before - 10**9, before - 10**9))
+        recomp.library_stamp(str(self.dll), recomp.library_objects([str(self.module)], str(self.rt)))
+        ok, runs = self.link(True)
+        self.assertTrue(ok, self.said)
+        self.assertEqual(runs, ['host.c /O2'])
+        self.assertEqual(len(self.linked), 1)
+        self.assertEqual(self.libraries, [])
+        self.assertIn(f'{game_dll.DLL}: linked from these same 4 objects already: kept as it is', self.said)
+        self.assertGreater(self.dll.stat().st_mtime_ns, before - 10**9)
+        self.assertEqual(self.link(True)[1], [])
+        self.assertEqual(self.libraries, [])
+        made_up.write(self.module / 'g0000.obj', 'object compiled again\n')
+        self.link(True)
+        self.assertEqual(len(self.libraries), 1)
+        with mock.patch.dict(os.environ, {'SSBU_KEEP_GAME_DLL': '0'}):
+            self.link(True)
+        self.assertEqual(len(self.libraries), 1)
+        self.dll.write_bytes(b'MZ another library')   # (not what its last link left: linked again)
+        self.link(True)
+        self.assertEqual(len(self.libraries), 1)
+
+    def test_the_prebuilt_runtime_first(self):
+        """(SSBU_PREBUILT_RUNTIME=<tag>, build_game.py's for a release install) Only the runtime changed: the release's
+        prebuilt runtime is put in place (tools/runtime_fetch.py) and nothing is compiled or linked. When it can't be,
+        or when the library has to be made again, the build is what it was."""
+        import runtime_fetch
+        self.link(True)
+        made_up.write(self.runtime / 'host.c', '#include "host.h"\nint host = 3;\n')
+        fetched = []
+
+        def fetch(tag, build=None, **_kw):
+            fetched.append((tag, build))
+            Path(build, 'ssbu.exe').write_bytes(b'MZ prebuilt')
+        with mock.patch.dict(os.environ, {'SSBU_PREBUILT_RUNTIME': 'v9.9.9'}), mock.patch.object(runtime_fetch, 'fetch', fetch):
+            ok, runs = self.link(True)
+        self.assertTrue(ok, self.said)
+        self.assertEqual((runs, self.linked, self.libraries), ([], [], []))
+        self.assertEqual(fetched, [('v9.9.9', str(self.dir / 'build'))])
+        self.assertEqual(self.exe.read_bytes(), b'MZ prebuilt')
+        self.assertIn("v9.9.9's prebuilt runtime is in place: nothing else compiled or linked", self.said)
+
+        def refused(tag, build=None, **_kw):
+            raise runtime_fetch.Error('offline')
+        with mock.patch.dict(os.environ, {'SSBU_PREBUILT_RUNTIME': 'v9.9.9'}), mock.patch.object(runtime_fetch, 'fetch', refused):
+            ok, runs = self.link(True)
+        self.assertTrue(ok, self.said)
+        self.assertEqual(runs, ['host.c /O2'])
+        self.assertIn('the prebuilt runtime of v9.9.9 could not be put in place (offline): the runtime is compiled here', self.said)
+        for env in ({'SSBU_PREBUILT_RUNTIME': '0'}, {}):
+            made_up.write(self.runtime / 'host.c', f'#include "host.h"\nint host = {len(env) + 4};\n')
+            with mock.patch.dict(os.environ, env), mock.patch.object(runtime_fetch, 'fetch', fetch):
+                self.assertEqual(self.link(True)[1], ['host.c /O2'])
+        made_up.write(self.module / 'g0000.obj', 'object compiled again\n')   # (the library is to be linked again)
+        with mock.patch.dict(os.environ, {'SSBU_PREBUILT_RUNTIME': 'v9.9.9'}), mock.patch.object(runtime_fetch, 'fetch', fetch):
+            self.link(True)
+        self.assertEqual(len(fetched), 1)
+        self.assertEqual(len(self.libraries), 1)
+        # a runtime header changed: the library's two own objects compile again, to the same bytes, and it still stays
+        made_up.write(self.runtime / 'host.h', '#pragma once\n#include "module.h"\n/* changed */\n')
+        with mock.patch.dict(os.environ, {'SSBU_PREBUILT_RUNTIME': 'v9.9.9'}), mock.patch.object(runtime_fetch, 'fetch', fetch):
+            ok, runs = self.link(True)
+        self.assertTrue(ok, self.said)
+        self.assertEqual((runs, self.linked, self.libraries), (['game_tables.c /O1', 'nro_table.c /O1'], [], []))
+        self.assertEqual(len(fetched), 2)
 
     def test_back_and_forth(self):
         """Without the switch the build is what it was: the runtime compiled again (its command changed), the game's

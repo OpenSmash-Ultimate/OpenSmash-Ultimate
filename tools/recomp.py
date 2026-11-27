@@ -569,17 +569,35 @@ def inline_points(name):
     return sorted(out)
 
 
-def module_fingerprint(fp, name):
-    """tools_fingerprint, with the module's hook targets: a new one generates its C again."""
+def module_fingerprint(fp, name, legacy=None):
+    """tools_fingerprint, with the module's hook targets: a new one generates its C again. legacy: modcache.fingerprint's."""
     hooks, inline, patches = hookable(name), inline_points(name), plugin_patches(name)
     if not hooks and not inline and not patches:
         return fp
     return modcache.fingerprint(fp + "\nhooks " + " ".join(f"{h:x}" for h in hooks) + "\ninline " + " ".join(f"{h:x}" for h in inline) +
-                                "\npatches " + " ".join(f"{o:x}:{w:x}" for o, _v, w in patches))
+                                "\npatches " + " ".join(f"{o:x}:{w:x}" for o, _v, w in patches), legacy)
 
 
-def tools_fingerprint():
-    """What the generated C depends on besides the module and its address (modcache)."""
+def module_fingerprints(names):
+    """{name: (its module_fingerprint, the other fingerprints its stamp may hold for the same C)}: a stamp written
+    under the fingerprint by the bytes (modcache.by_meaning off, or a build from before it) is current while those
+    bytes are today's, so turning it on writes no C again."""
+    fp = tools_fingerprint()
+    fps = {name: module_fingerprint(fp, name) for name in names}
+    if not modcache.by_meaning():
+        return {name: (f, ()) for name, f in fps.items()}
+    old = tools_fingerprint(legacy=True)
+    return {name: (f, (module_fingerprint(old, name, legacy=True),)) for name, f in fps.items()}
+
+
+def c_current(target, build_id, name, fps):
+    """A module folder's C is this module's, at its address, by these tools (fps: module_fingerprints' pair)."""
+    info = modcache.build_info(target)
+    return info is not None and tuple(info[:3]) == (build_id, MODULES[name], name) and info[3] in (fps[0], *fps[1])
+
+
+def tools_fingerprint(legacy=None):
+    """What the generated C depends on besides the module and its address (modcache). legacy: modcache.fingerprint's."""
     import lift
     by_address, by_name = runtime_wraps()
     wraps = sorted(by_address.items())
@@ -587,7 +605,7 @@ def tools_fingerprint():
     return modcache.fingerprint("\n".join(sorted(hle_names())) + "\n" + repr(wraps) + "\n" + repr(hooks)
                                 + f"\nregcache {int(lift.REGCACHE)}"
                                 # (in the sources' order: the order of the wrappers of a function exported under several)
-                                + (f"\nexport wraps {list(by_name.items())!r}" if by_name else ""))
+                                + (f"\nexport wraps {list(by_name.items())!r}" if by_name else ""), legacy)
 
 
 def write_if_changed(path, text):
@@ -1534,6 +1552,87 @@ def main_kind_room(dirs):
     return -1
 
 
+def library_objects(dirs, rt_dir):
+    """What the game library (--game-dll) is linked from, in link's order: its side of the interface
+    (game_tables.obj), the NROs' list (nro_table.obj), then each module folder's objects (not a mod's own
+    plugin's: that is a DLL of its own)."""
+    skip = plugin_modules() - standard_plugins()
+    game = []
+    for d in dirs:
+        n = os.path.normpath(d)
+        if os.path.basename(os.path.dirname(n)) == "nro" and os.path.basename(n) in skip:
+            continue
+        game += sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".obj"))
+    return [os.path.join(rt_dir, game_dll.TABLES[:-2] + ".obj"), os.path.join(rt_dir, "nro_table.obj")] + game
+
+
+def _without_date(obj):
+    """An object file's bytes without the time its COFF header records (clang-cl writes the time of the compile there):
+    the same code compiled again reads the same."""
+    with open(obj, "rb") as f:
+        b = bytearray(f.read())
+    if b[:4] == bytes((0, 0, 0xFF, 0xFF)) and len(b) >= 12:   # (/bigobj's header)
+        b[8:12] = bytes(4)
+    elif len(b) >= 8 and b[:2] in (bytes((0x64, 0x86)), bytes((0x4C, 0x01)), bytes((0x64, 0xAA))):   # (x64, x86, arm64)
+        b[4:8] = bytes(4)
+    return bytes(b)
+
+
+def _library_inputs(objs, lib):
+    """A digest of what the game library is linked from: the link command, and each object's path with its size and
+    time (an object is only ever written by its compile), or for the library's two own small ones their content."""
+    import cc
+    h = hashlib.sha256("\0".join(cc.library_command("objects.rsp", lib)).encode("utf-8", "surrogateescape"))
+    for n, o in enumerate(objs):
+        st = os.stat(o)
+        if n < 2:   # (game_tables.obj, nro_table.obj: compiled again whenever a runtime header changes, to the same code)
+            what = hashlib.sha256(_without_date(o)).hexdigest()
+        else:
+            what = f"{st.st_size}\0{st.st_mtime_ns}"
+        h.update(f"\n{os.path.abspath(o)}\0{what}".encode("utf-8", "surrogateescape"))
+    return h.hexdigest()
+
+
+def _library_record(lib):
+    return os.path.join(os.path.dirname(os.path.abspath(lib)), "ssbu_game.link.txt")
+
+
+def library_stamp(lib, objs):
+    """Record what the game library `lib` was just linked from (objs; None: forget it)."""
+    path = _library_record(lib)
+    if objs is None:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    st = os.stat(lib)
+    modcache.replace_file(path, f"{_library_inputs(objs, lib)} {st.st_size} {st.st_mtime_ns}\n")
+
+
+def library_kept(objs, lib):
+    """(SSBU_KEEP_GAME_DLL, on unless 0) The game library need not be linked again: it is there, as its last link
+    left it, and that link was from these same objects with the same command (library_stamp). An update that
+    changes only the runtime then relinks only the program (4 MB), not the library (950 MB, 30 to 60 s). 0: the
+    library is linked at every link, as before."""
+    if os.environ.get("SSBU_KEEP_GAME_DLL", "1").strip() == "0":
+        return False
+    try:
+        with open(_library_record(lib)) as f:
+            digest, size, mtime = f.read().split()
+        st = os.stat(lib)
+        return (int(size), int(mtime)) == (st.st_size, st.st_mtime_ns) and digest == _library_inputs(objs, lib)
+    except (OSError, ValueError):
+        return False
+
+
+def library_touch(lib, objs):
+    """A kept library dated now, as a link would have left it (tools/build_game.py's build_is_current goes by the
+    dates), and its record with that date."""
+    os.utime(lib)
+    library_stamp(lib, objs)
+
+
 def link(dirs, exe, rt_dir=None, steps=None):
     """Compile the host runtime and link it with the given module build directories. The
     runtime's objects go to rt_dir (default: rt beside the exe). steps: the build's ladder.Ladder
@@ -1605,19 +1704,49 @@ def link(dirs, exe, rt_dir=None, steps=None):
         write_if_changed(tables, game_dll.tables_text(cc.RUNTIME))
         want(funcs, funcs[:-2] + ".obj", "/O1", rt_flags)
         want(tables, tables[:-2] + ".obj", "/O1", cc.GAME_CFLAGS)
-    if objcache.summary(why):
-        print(f"runtime: {objcache.summary(why)}")
+    game_lib = os.path.join(os.path.dirname(os.path.abspath(exe)), game_dll.DLL)
+    library_side = {nro_table[:-2] + ".obj", tables[:-2] + ".obj"}
     every = [job for group in jobs.values() for job in group]
-    record.forget([obj for _src, obj, _opt in every])
-    for _src, obj, _opt in every:   # (as compile_dir: a file that fails to compile leaves no old object)
-        if os.path.exists(obj):
-            os.remove(obj)
+    # (SSBU_PREBUILT_RUNTIME=<release tag>, tools/build_game.py's for a release install) Only the runtime is to be
+    # made again - the game library would be linked from the very objects it was linked from - so the release's
+    # prebuilt runtime is put in place now (tools/runtime_fetch.py, which the installer ran after this build anyway,
+    # over the one made here) and nothing is compiled. If it can't be (offline, or it does not take this library),
+    # the runtime is compiled here as before.
+    tag = os.environ.get("SSBU_PREBUILT_RUNTIME", "").strip()
+    library = library_objects(dirs, rt_dir)
     failures, own = [], steps is None
     steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
-    try:
+
+    def compile_now(chosen):   # (as compile_dir: a file that fails to compile leaves no old object)
+        record.forget([obj for _src, obj, _opt in chosen])
+        for _src, obj, _opt in chosen:
+            if os.path.exists(obj):
+                os.remove(obj)
         for flags, group in jobs.items():
-            failures += cc.compile_each(group, 4, compiled=lambda job, _level: record.compiled(job[1], keys[job[1]]),
-                                        flags=None if flags is None else list(flags), steps=steps)
+            group = [job for job in group if job in chosen]
+            if group:
+                failures.extend(cc.compile_each(group, 4, compiled=lambda job, _level: record.compiled(job[1], keys[job[1]]),
+                                                flags=None if flags is None else list(flags), steps=steps))
+    try:
+        if GAME_DLL and tag not in ("", "0"):
+            # the library's two small objects first (compiled again when a runtime header changed, to the same bytes,
+            # which library_kept goes by), then whether the library stays as it is
+            first = [job for job in every if job[1] in library_side]
+            compile_now(first)
+            every = [job for job in every if job not in first]
+            if not failures and library_kept(library, game_lib):
+                try:
+                    import runtime_fetch
+                    runtime_fetch.fetch(tag, build=os.path.dirname(os.path.abspath(exe)))
+                    library_touch(game_lib, library)
+                    print(f"the game library is the one linked from these objects, and {tag}'s prebuilt runtime is in place: "
+                          f"nothing else compiled or linked ({time.time() - t0:,.0f}s)")
+                    return True
+                except Exception as e:   # (runtime_fetch.Error, OSError, a check that timed out: never a reason to stop the build)
+                    print(f"the prebuilt runtime of {tag} could not be put in place ({e}): the runtime is compiled here")
+        if objcache.summary(why):
+            print(f"runtime: {objcache.summary(why)}")
+        compile_now(every)
     finally:
         if own:
             steps.end(os.path.dirname(os.path.abspath(exe)))
@@ -1629,25 +1758,27 @@ def link(dirs, exe, rt_dir=None, steps=None):
     if os.path.isfile(decode_src):
         objs.append(decode_obj)
     objs.append(nro_table[:-2] + ".obj")   # (last: a --game-dll build moves it into the library)
-    game = []
-    for d in dirs:
-        if mod_plugin(d):
-            continue
-        game += sorted(os.path.join(d, n) for n in os.listdir(d) if n.endswith(".obj"))
-    game_lib = os.path.join(os.path.dirname(os.path.abspath(exe)), game_dll.DLL)
-    if os.path.exists(game_lib):   # (a --game-dll build's: made again below, or not wanted)
+    game = library[2:]
+    kept = GAME_DLL and library_kept(library, game_lib)
+    if os.path.exists(game_lib) and not kept:   # (a --game-dll build's: made again below, or not wanted)
         os.remove(game_lib)
+        library_stamp(game_lib, None)
     if GAME_DLL:   # (the NROs' list is the library's)
-        objs, library = objs[:-1] + [funcs[:-2] + ".obj"], [tables[:-2] + ".obj", objs[-1]] + game
+        objs = objs[:-1] + [funcs[:-2] + ".obj"]
         cc.link(objs, exe)
-        try:
-            cc.link_library(library, game_lib)
-        except Exception:
-            # a program without its library does not start, yet it would pass for a finished build (tools/skyline.py
-            # needs_build, the installer's "nothing that goes into the game changed": a run after this one skipped
-            # the link and said it was done): no program, so that run links again
-            os.remove(exe)
-            raise
+        if kept:
+            library_touch(game_lib, library)
+            print(f"{game_dll.DLL}: linked from these same {len(library)} objects already: kept as it is")
+        else:
+            try:
+                cc.link_library(library, game_lib)
+            except Exception:
+                # a program without its library does not start, yet it would pass for a finished build (tools/skyline.py
+                # needs_build, the installer's "nothing that goes into the game changed": a run after this one skipped
+                # the link and said it was done): no program, so that run links again
+                os.remove(exe)
+                raise
+            library_stamp(game_lib, library)
     else:
         objs += game
         # a wrap no module has (a made-up game's modules, tools/mac/boottest): its original is a stub nothing calls
@@ -1667,7 +1798,7 @@ def link(dirs, exe, rt_dir=None, steps=None):
         if glslang_lib.have():
             glslang_lib.build(os.path.join(os.path.dirname(os.path.abspath(exe)), glslang_lib.DLL_NAME))
     print(f"linked {len(objs)} objects into {exe} ({os.path.getsize(exe) / 1048576:,.0f} MB) in {time.time() - t0:,.0f}s")
-    if GAME_DLL:
+    if GAME_DLL and not kept:
         print(f"linked {len(library)} objects into {game_lib} ({os.path.getsize(game_lib) / 1048576:,.0f} MB)")
     return True
 
@@ -1721,18 +1852,17 @@ def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
     paths = module_paths(exefs)
     mods = {name: Module(path) for name, path in paths.items()}
     check(exefs, mods)
-    fp = tools_fingerprint()
     targets = {name: os.path.join(out, "nro", name) if os.path.dirname(nso) == NRO_DIR else os.path.join(out, name)
                for name, nso in paths.items()}
     shown = progress.Build(min(jobs, 16), compile=compile_c, link=progress.LINK if compile_c else None)
-    fps = {name: module_fingerprint(fp, name) for name in mods}
+    known = module_fingerprints(mods)   # (each module's fingerprint, and the older one its stamp may hold)
+    fps = {name: f for name, (f, _older) in known.items()}
 
     def stale(target):   # (for the bar; none when the C is compiled elsewhere: --generate-only)
         return [(t[0], t[3]) for t in stale_files(target)] if compile_c else []
     generate = False
     for name, mod in mods.items():
-        current = (modcache.build_info(targets[name]) == (mod.build_id, MODULES[name], name, fps[name])
-                   and not (compile_c and c_needed(targets[name])))
+        current = c_current(targets[name], mod.build_id, name, known[name]) and not (compile_c and c_needed(targets[name]))
         generate |= not current
         shown.module(name, (mod.text.end - mod.text.mem) // 4, stale(targets[name]) if current else None)
     build_ids = {name: mod.build_id for name, mod in mods.items()}
@@ -1759,7 +1889,7 @@ def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
             img = os.path.join(ROOT, "dump", "modules", name + ".reloc.bin")
             if not os.path.exists(img) or os.path.getmtime(img) < os.path.getmtime(nso):
                 image(nso, img)
-            current = modcache.build_info(target) == (build_id, base, name, fps[name]) and not (compile_c and c_needed(target))
+            current = c_current(target, build_id, name, known[name]) and not (compile_c and c_needed(target))
             # An up-to-date fighter is not named on the bar. A plugin build links every module, but
             # only the ones whose hooks changed (main, the shared lua, the mod's own plugin) are rewritten.
             if not current:
@@ -1787,39 +1917,46 @@ def build_all(exefs, out, jobs, compile_c=True, gen_jobs=None):
         if not compile_c:
             print(f"the C of {len(paths)} modules is in {out} (--generate-only: not compiled here)")
             return True
-        plugins, left_out = plugin_modules(), []
-        steps = ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())   # (one pace and one report for the whole build)
-        try:
-            # every module's files in one pool, the longest first (module after module with SSBU_ONE_QUEUE=0);
-            # each module's stamp as soon as its files are compiled
-            names = {targets[name]: name for name in paths}
+        return compile_and_link(paths, targets, build_ids, fps, jobs, shown, exe, out)
 
-            def fatal(d):
-                return names[d] not in plugins
 
-            def stamp(d):
-                modcache.write_stamp(d, build_ids[names[d]], MODULES[names[d]], names[d], fps[names[d]])
-            if one_queue():
-                failed = compile_dirs(list(names), min(jobs, 16), shown, steps, fatal=fatal, done=stamp, longest=True)
-            else:
-                failed = []
-                for d in names:
-                    failed += compile_dirs([d], min(jobs, 16), shown, steps, fatal=fatal, done=stamp)
-                    if failed and fatal(failed[-1]):
-                        break
-            for d in failed:
-                if names[d] not in plugins:
-                    return False
-                # (a mod's plugin that doesn't compile: the game is built without it, not stopped)
-                print(f"{names[d]}: this plugin did not compile (above): the game is built without it, so its mod's "
-                      "moves or character won't work - send the message above to OpenSmash")
-                left_out.append(names[d])
-            shown.begin("link")
-            ok = link([t for n, t in targets.items() if n not in left_out], exe, steps=steps)
-            shown.end("link")
-            return ok
-        finally:
-            steps.end(out)
+def compile_and_link(paths, targets, build_ids, fps, jobs, shown, exe, out):
+    """build_all's compile and link, once every module's C is written: every module's stale files in one pool, each
+    module's stamp (fps) as soon as its files are compiled, then the link. (A function of its own, out of the
+    generator's fingerprint: modcache.DRIVER_ONLY.)"""
+    plugins, left_out = plugin_modules(), []
+    steps = ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())   # (one pace and one report for the whole build)
+    try:
+        # every module's files in one pool, the longest first (module after module with SSBU_ONE_QUEUE=0);
+        # each module's stamp as soon as its files are compiled
+        names = {targets[name]: name for name in paths}
+
+        def fatal(d):
+            return names[d] not in plugins
+
+        def stamp(d):
+            modcache.write_stamp(d, build_ids[names[d]], MODULES[names[d]], names[d], fps[names[d]])
+        if one_queue():
+            failed = compile_dirs(list(names), min(jobs, 16), shown, steps, fatal=fatal, done=stamp, longest=True)
+        else:
+            failed = []
+            for d in names:
+                failed += compile_dirs([d], min(jobs, 16), shown, steps, fatal=fatal, done=stamp)
+                if failed and fatal(failed[-1]):
+                    break
+        for d in failed:
+            if names[d] not in plugins:
+                return False
+            # (a mod's plugin that doesn't compile: the game is built without it, not stopped)
+            print(f"{names[d]}: this plugin did not compile (above): the game is built without it, so its mod's "
+                  "moves or character won't work - send the message above to OpenSmash")
+            left_out.append(names[d])
+        shown.begin("link")
+        ok = link([t for n, t in targets.items() if n not in left_out], exe, steps=steps)
+        shown.end("link")
+        return ok
+    finally:
+        steps.end(out)
 
 
 def arg(name, default=None):
