@@ -132,8 +132,15 @@ public sealed partial class MainWindow
         try
         {
             var c0 = Surface.Community;
-            var top = Mastery.UiOn && Mastery.TopOn && _project != null ? Mastery.TopAsync(_account, Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
-            if (top != null) { c0.TopMastery = await top ?? c0.TopMastery; c0.TopMasteryAsked = true; }
+            // (the top mastery at most every CommunityPoll.BoardInterval: the service keeps that board for an hour)
+            var top = Mastery.UiOn && Mastery.TopOn && _project != null && CommunityPoll.BoardDue(_boardAt, DateTime.UtcNow, CommunityPoll.BoardInterval)
+                ? Mastery.TopAsync(_account, Http, OfficialLobby.All(_project.Root), CancellationToken.None, 5) : null;
+            if (top != null)
+            {
+                var rows = await top;
+                if (rows != null) { c0.TopMastery = rows; _boardAt = DateTime.UtcNow; }   // (a failed ask: tried again at the next poll)
+                c0.TopMasteryAsked = true;
+            }
         }
         finally { _serviceBusy = false; }
         Surface.InvalidateVisual();
@@ -143,6 +150,7 @@ public sealed partial class MainWindow
     // The COMPETITIVE page's board (Visuals/CompetitiveArtwork.cs): SSBU Arena's ranked top 10 for the region picked there.
     bool _rankedBusy;
     DateTime _rankedAt = DateTime.MinValue;
+    DateTime _boardAt = DateTime.MinValue;   // (the top mastery's last answer, ServiceRefresh)
     async Task RankedRefresh(bool force = false)
     {
         var c = Surface.Community;

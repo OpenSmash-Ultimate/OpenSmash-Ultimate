@@ -4,6 +4,9 @@
 // (SSBU Arena's CrashReport: the private bucket "crashes" and public.crash_report_add, with p_product = 'opensmash').
 // Only when signed in and with the setting on. Before sending, what identifies the player or the PC is removed (Clean).
 // Minidumps (memory contents) are never sent.
+// play.log: since 2026-11-27 at most 256 KB of it, its first 32 KB (the GPU, the settings) and its end, where the game
+// stopped (it was its last 1 MB: ~750 KB a report on average, 80% of the bucket, which filled ~110 MB a day of the free
+// plan's 1 GB). OPENSMASH_CRASH_LOG_KB=<KB> (64..1024, default 256); 0 or off = its last 1 MB, as before.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -21,6 +24,22 @@ namespace OpenSmash.Core
     {
         public const int MaxLog = 1024 * 1024, MaxReport = 256 * 1024;   // bytes sent at most of each file
         public const int ReportHead = 64 * 1024;   // of a longer report: its start sent (what happened, "Why:"), then its end
+        public const string LogVariable = "OPENSMASH_CRASH_LOG_KB";
+        public const int LogDefault = 256 * 1024, LogHead = 32 * 1024;   // play.log: bytes sent at most, and of a longer one its start
+
+        /// <summary>the bytes of play.log sent (OPENSMASH_CRASH_LOG_KB): none or not a number 256 KB; 0 / off: 0, the old way
+        /// (its last MaxLog bytes); else 64..1024 KB</summary>
+        public static int ParseLogLimit(string value)
+        {
+            string v = (value ?? "").Trim();
+            if (v == "0" || v.Equals("off", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (!int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out int kb) || kb <= 0) return LogDefault;
+            return Math.Clamp(kb, 64, MaxLog / 1024) * 1024;
+        }
+
+        /// <summary>what of play.log is sent: with a limit, its start and end within it (HeadAndTail); with 0, its last MaxLog bytes</summary>
+        public static string LogPart(string path, int limit) =>
+            limit > 0 ? HeadAndTail(path, limit, Math.Min(LogHead, limit / 4)) : Tail(path, MaxLog);
         static readonly string[] Kinds = { "crash", "freeze", "rollback" };
 
         /// <summary>the newest report written since the game started, or null</summary>
@@ -119,7 +138,7 @@ namespace OpenSmash.Core
                 string kind = Path.GetFileName(file).Split('_')[0].ToLowerInvariant();
                 string report = Clean(HeadAndTail(file, MaxReport, ReportHead), root);
                 string playLog = Path.Combine(root, "build", "play.log");
-                string logText = File.Exists(playLog) ? Clean(Tail(playLog, MaxLog), root) : null;
+                string logText = File.Exists(playLog) ? Clean(LogPart(playLog, ParseLogLimit(Environment.GetEnvironmentVariable(LogVariable))), root) : null;
                 string first = Title(report, kind);
                 var gpu = logText == null ? null : Regex.Match(logText, @"(?:Vulkan|D3D11|device)[^\r\n]{0,20}:\s*([^\r\n(]{4,80})");
                 string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);

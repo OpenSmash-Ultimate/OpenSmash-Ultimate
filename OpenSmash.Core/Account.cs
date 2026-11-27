@@ -231,15 +231,53 @@ namespace OpenSmash.Core
 
         void SignOutLocal()
         {
-            access = refresh = null; Me = null;
+            access = refresh = null; Me = null; ticketKept = null;
             try { File.Delete(sessionFile); } catch { }
         }
 
-        /// <summary>a fresh lobby ticket for the game (SSBU_ONLINE_TICKET_FILE)</summary>
+        /// <summary>a fresh lobby ticket for the game (SSBU_ONLINE_TICKET_FILE). The launcher asked for one several times within
+        /// a minute (at start for the standing pass and again for the GSP and mastery, then again at Play): a ticket this
+        /// program got less than TicketReuse ago, for this account, still in the first half of its life, is given again
+        /// instead of asking (OPENSMASH_TICKET_REUSE_S, default 600; 0 = a new one every time, as before). The game's
+        /// renewal at half its life (OnlinePass.KeepFresh) always gets a new one: a ticket past half its life is never reused.</summary>
         public async Task<string> LobbyTicketAsync()
         {
+            string again = ticketKept;
+            if (again != null && Reusable(again, Me?.Id, ticketKeptAt, DateTime.UtcNow, TicketReuse)) return again;
             await EnsureAccessAsync();
-            return JsonSerializer.Deserialize<string>(await RequestAsync("POST", "/rest/v1/rpc/lobby_ticket", "{}", access));
+            string t = JsonSerializer.Deserialize<string>(await RequestAsync("POST", "/rest/v1/rpc/lobby_ticket", "{}", access));
+            ticketKept = t; ticketKeptAt = DateTime.UtcNow;
+            return t;
+        }
+
+        string ticketKept;          // the last ticket the service gave this program, and when (this PC's clock)
+        DateTime ticketKeptAt;
+
+        public const string TicketReuseVariable = "OPENSMASH_TICKET_REUSE_S";
+
+        /// <summary>how long a ticket may be given again (OPENSMASH_TICKET_REUSE_S, 0..3600; none or not a number: 10 minutes;
+        /// 0: never, a new one each time as before)</summary>
+        public static TimeSpan ParseTicketReuse(string value)
+        {
+            if (!int.TryParse((value ?? "").Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int s) || s < 0)
+                s = 600;
+            return TimeSpan.FromSeconds(Math.Min(s, 3600));
+        }
+
+        public static TimeSpan TicketReuse => ParseTicketReuse(Environment.GetEnvironmentVariable(TicketReuseVariable));
+
+        /// <summary>whether a ticket got at gotUtc may be given again at nowUtc: reuse on, got less than reuse ago, this
+        /// account's (its first field), and still in the first half of its life by its own issued and expiry times (a ticket
+        /// that does not say when it was issued is never reused)</summary>
+        public static bool Reusable(string ticket, string accountId, DateTime gotUtc, DateTime nowUtc, TimeSpan reuse)
+        {
+            if (reuse <= TimeSpan.Zero || string.IsNullOrEmpty(ticket) || string.IsNullOrEmpty(accountId)) return false;
+            if (nowUtc < gotUtc || nowUtc - gotUtc >= reuse) return false;
+            if (!ticket.StartsWith(accountId + "|", StringComparison.Ordinal)) return false;
+            long exp = OnlinePass.Expiry(ticket), issued = OnlinePass.Issued(ticket);
+            if (exp <= 0 || issued <= 0 || exp <= issued) return false;
+            long now = new DateTimeOffset(DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc)).ToUnixTimeSeconds();
+            return now - issued < (exp - issued) / 2;
         }
 
         /// <summary>a REST / RPC call with the player's own session (never a service key): the answer's text</summary>
