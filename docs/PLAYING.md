@@ -310,7 +310,7 @@ When the game crashes, or freezes with no new picture for five seconds, OpenSmas
 | File | Written when |
 | :--- | :--- |
 | `crash_<time>.txt` | The game crashed. |
-| `freeze_<time>.txt` | No new picture for 5 seconds (again at 30 and 120 seconds). |
+| `freeze_<time>.txt` | No new picture for 15 seconds (again at 30 and 120 seconds). A shorter stall is only a line in the log; `SSBU_FREEZE_CONFIRM=0` reports after 5 seconds, as before 0.5.4. |
 | `stopped_<time>.txt` | The game stopped with an error message. |
 | `<…>.dmp` | Next to a crash or freeze report: a minidump of the game's memory. |
 
