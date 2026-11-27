@@ -7,6 +7,10 @@
 // 30 s is added to each interval so the launchers started together do not keep asking in the same second.
 // The lobbies' own pages (status.json, leaderboard.json) are not the accounts service: they keep their minute.
 // OPENSMASH_COMMUNITY_POLL_S=<seconds> (30..3600, default 300); 60 is the old pace (and no random wait at 60 or below).
+// The top mastery is asked less often than the rest: the accounts service keeps that board's answer for an hour
+// (private.opensmash_board_cache_cfg ttl_s 3600), so asking it every 5 minutes got the same rows 11 times in 12. It is asked
+// at start and then when its last answer is `BoardInterval` old (30 minutes), at the next poll; a failed ask is tried again
+// at the next poll. OPENSMASH_BOARD_POLL_S=<seconds> (300..3600, default 1800); 0 = at every poll, as before.
 using System;
 
 namespace OpenSmash.Core
@@ -42,6 +46,25 @@ namespace OpenSmash.Core
             lock (Rng) r = Rng.NextDouble();
             return Next(Interval, r);
         }
+
+        public const string BoardVariable = "OPENSMASH_BOARD_POLL_S";
+        public const int BoardDefaultSeconds = 1800, BoardMinSeconds = 300;
+
+        /// <summary>how old the top mastery's answer may get before it is asked again (OPENSMASH_BOARD_POLL_S): none or not a
+        /// number: 30 minutes; 0: TimeSpan.Zero, asked at every poll (the old way)</summary>
+        public static TimeSpan ParseBoard(string value)
+        {
+            if (!int.TryParse((value ?? "").Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int s) || s < 0)
+                s = BoardDefaultSeconds;
+            return s == 0 ? TimeSpan.Zero : TimeSpan.FromSeconds(Math.Clamp(s, BoardMinSeconds, MaxSeconds));
+        }
+
+        public static TimeSpan BoardInterval => ParseBoard(Environment.GetEnvironmentVariable(BoardVariable));
+
+        /// <summary>whether this poll asks the top mastery too: never asked (or the last ask failed), the old way (Zero), or the
+        /// last answer at least the board interval old less 5 s (the poll's own timer lands about on it)</summary>
+        public static bool BoardDue(DateTime lastUtc, DateTime nowUtc, TimeSpan boardInterval) =>
+            lastUtc == DateTime.MinValue || boardInterval <= TimeSpan.Zero || nowUtc - lastUtc >= boardInterval - TimeSpan.FromSeconds(5);
 
         /// <summary>whether the window shown again should ask now: never asked, or the last answer older than the interval</summary>
         public static bool Due(DateTime lastUtc, DateTime nowUtc, TimeSpan interval) =>

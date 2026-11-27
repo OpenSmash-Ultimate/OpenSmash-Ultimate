@@ -34,6 +34,7 @@ namespace OpenSmash.Launcher
         // (the accounts service's part: when it was last asked, the region's count it gave, and the lobby's own last
         // status page; LobbyCompose puts the two together)
         DateTime _serviceAt = DateTime.MinValue;
+        DateTime _boardAt = DateTime.MinValue;   // (the top mastery's last answer: asked at most every CommunityPoll.BoardInterval)
         (int Players, int Rooms)? _count;
         LobbyStatus? _lobbyPage;
         bool _lobbyPageUp, _shownHooked;
@@ -188,11 +189,17 @@ namespace OpenSmash.Launcher
                 bool mastery = OpenSmash.Core.Mastery.UiOn;
                 // (the top mastery: the accounts service's board, the lobbies' lists only when it fails)
                 var top = mastery && OpenSmash.Core.Mastery.TopOn
+                          && OpenSmash.Core.CommunityPoll.BoardDue(_boardAt, DateTime.UtcNow, OpenSmash.Core.CommunityPoll.BoardInterval)
                     ? OpenSmash.Core.Mastery.TopAsync(_account, _httpClient, OpenSmash.Core.OfficialLobby.All(_repo), CancellationToken.None, 5) : null;
                 _count = await counted;
                 if (_count != null) _lobbyAsked = true;
                 LobbyCompose();
-                if (top != null) { _topMastery = await top ?? _topMastery; _topMasteryAsked = true; }
+                if (top != null)
+                {
+                    var rows = await top;
+                    if (rows != null) { _topMastery = rows; _boardAt = DateTime.UtcNow; }   // (a failed ask: tried again at the next poll)
+                    _topMasteryAsked = true;
+                }
             }
             catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { }
             finally { Interlocked.Exchange(ref _serviceBusy, 0); }

@@ -30,6 +30,16 @@ namespace OpenSmash.Core
             return p.Length >= 3 && long.TryParse(p[2], out long e) ? e : 0;
         }
 
+        /// <summary>"&lt;id&gt;|&lt;name&gt;|&lt;expiry&gt;|&lt;issued&gt;[|...].&lt;mac&gt;": when it was issued (unix seconds), 0 when it
+        /// does not say (a ticket before 20261031)</summary>
+        public static long Issued(string ticket)
+        {
+            if (string.IsNullOrEmpty(ticket)) return 0;
+            int dot = ticket.LastIndexOf('.');
+            var p = (dot > 0 ? ticket.Substring(0, dot) : ticket).Split('|');
+            return p.Length >= 4 && long.TryParse(p[3], out long i) ? i : 0;
+        }
+
         /// <summary>a fresh ticket in the file; false (the file removed) when not signed in or the server cannot be reached</summary>
         public async Task<bool> WriteAsync()
         {

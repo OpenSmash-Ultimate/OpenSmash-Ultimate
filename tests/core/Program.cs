@@ -807,6 +807,64 @@ static class Program
         Check(!CommunityPoll.Fresh(DateTime.MinValue, t0, five) && CommunityPoll.Fresh(t0, t0.AddSeconds(200), five) && !CommunityPoll.Fresh(t0, t0.AddSeconds(296), five),
               "community poll: a page opened again within 5 minutes shows the last answer");
 
+        // the top mastery asked at most every 30 minutes (CommunityPoll.BoardInterval): the service keeps that board an hour
+        Check(CommunityPoll.ParseBoard(null) == TimeSpan.FromMinutes(30) && CommunityPoll.ParseBoard("soon") == TimeSpan.FromMinutes(30)
+              && CommunityPoll.ParseBoard("-5") == TimeSpan.FromMinutes(30), "board poll: 1800 s unless set");
+        Check(CommunityPoll.ParseBoard("0") == TimeSpan.Zero && CommunityPoll.ParseBoard("60") == TimeSpan.FromMinutes(5)
+              && CommunityPoll.ParseBoard("99999") == TimeSpan.FromHours(1) && CommunityPoll.ParseBoard(" 900 ") == TimeSpan.FromMinutes(15),
+              "board poll: OPENSMASH_BOARD_POLL_S=0 is the old way (every poll), else kept within 5 min..1 h");
+        var half = TimeSpan.FromMinutes(30);
+        Check(CommunityPoll.BoardDue(DateTime.MinValue, t0, half) && !CommunityPoll.BoardDue(t0, t0.AddMinutes(5), half)
+              && !CommunityPoll.BoardDue(t0, t0.AddMinutes(25), half) && CommunityPoll.BoardDue(t0, t0.AddSeconds(1797), half)
+              && CommunityPoll.BoardDue(t0, t0.AddMinutes(31), half), "board poll: asked first, then at the poll that lands on 30 minutes");
+        Check(CommunityPoll.BoardDue(t0, t0.AddSeconds(1), TimeSpan.Zero), "board poll: 0 = asked at every poll, as before");
+        // (polls every 300..330 s, as CommunityPoll.Next waits: how many board asks in 6 hours of a shown launcher)
+        int asks = 0, polls = 0; var boardAt = DateTime.MinValue; var pollAt = t0; var rnd = new Random(7);
+        while (pollAt < t0.AddHours(6)) { polls++; if (CommunityPoll.BoardDue(boardAt, pollAt, half)) { asks++; boardAt = pollAt; } pollAt += CommunityPoll.Next(five, rnd.NextDouble()); }
+        Check(polls >= 65 && asks <= 13 && asks >= 10, "board poll: about 2 asks an hour instead of 12 (" + asks + " of " + polls + ")");
+
+        // a lobby ticket given again within 10 minutes, this account's, in the first half of its life (Account.Reusable)
+        Check(Account.ParseTicketReuse(null) == TimeSpan.FromMinutes(10) && Account.ParseTicketReuse("x") == TimeSpan.FromMinutes(10)
+              && Account.ParseTicketReuse("0") == TimeSpan.Zero && Account.ParseTicketReuse("99999") == TimeSpan.FromHours(1), "ticket reuse: 600 s unless set, 0 = never");
+        const string uid = "00000000-0000-4000-8000-000000000001";
+        long issuedAt = new DateTimeOffset(t0).ToUnixTimeSeconds();
+        string tk = uid + "|Alice|" + (issuedAt + 28800) + "|" + issuedAt + "|d=1001." + new string('f', 64);
+        var ten = TimeSpan.FromMinutes(10);
+        Check(OnlinePass.Issued(tk) == issuedAt && OnlinePass.Issued(uid + "|Alice|1800000000." + new string('f', 64)) == 0 && OnlinePass.Issued("garbage") == 0, "ticket issued time");
+        Check(Account.Reusable(tk, uid, t0, t0.AddMinutes(3), ten), "ticket reuse: the one got 3 minutes ago is given again");
+        Check(!Account.Reusable(tk, uid, t0, t0.AddMinutes(10), ten) && !Account.Reusable(tk, uid, t0, t0.AddMinutes(3), TimeSpan.Zero),
+              "ticket reuse: not after 10 minutes, never with OPENSMASH_TICKET_REUSE_S=0");
+        Check(!Account.Reusable(tk, "00000000-0000-4000-8000-000000000002", t0, t0.AddMinutes(1), ten) && !Account.Reusable(tk, null, t0, t0.AddMinutes(1), ten),
+              "ticket reuse: never another account's");
+        Check(!Account.Reusable(tk, uid, t0.AddHours(4), t0.AddHours(4).AddMinutes(1), ten), "ticket reuse: never one past half its life (the game's renewal gets a new one)");
+        Check(!Account.Reusable(uid + "|Alice|" + (issuedAt + 28800) + "." + new string('f', 64), uid, t0, t0.AddMinutes(1), ten), "ticket reuse: never a ticket without its issued time");
+        Check(!Account.Reusable(tk, uid, t0, t0.AddMinutes(-1), ten), "ticket reuse: not when the clock went back");
+
+        // play.log sent at most 256 KB, its start and its end (CrashReport.LogPart)
+        Check(CrashReport.ParseLogLimit(null) == 256 * 1024 && CrashReport.ParseLogLimit("x") == 256 * 1024 && CrashReport.ParseLogLimit("0") == 0
+              && CrashReport.ParseLogLimit("off") == 0 && CrashReport.ParseLogLimit("8") == 64 * 1024 && CrashReport.ParseLogLimit("4096") == CrashReport.MaxLog,
+              "crash log: 256 KB unless set, 0/off = the old last 1 MB");
+        string logDir = Path.Combine(Path.GetTempPath(), "os_crashlog_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logDir);
+        try
+        {
+            string bigLog = Path.Combine(logDir, "play.log");
+            var sb = new StringBuilder("[gpu] Vulkan device: Made Up GPU 9000\n");
+            for (int i = 0; sb.Length < 2 * 1024 * 1024; i++) sb.Append("[frame] line ").Append(i).Append(" of a long session\n");
+            sb.Append("[end] the last line\n");
+            File.WriteAllText(bigLog, sb.ToString());
+            string part = CrashReport.LogPart(bigLog, CrashReport.ParseLogLimit(null));
+            int partBytes = Encoding.UTF8.GetByteCount(part);
+            Check(partBytes <= 256 * 1024 && partBytes > 250 * 1024 && part.StartsWith("[gpu] Vulkan device: Made Up GPU 9000\n") && part.EndsWith("[end] the last line\n")
+                  && part.Contains(" bytes omitted ..."), "crash log: a 2 MB log sent as its start and end, 256 KB (" + partBytes + ")");
+            string old = CrashReport.LogPart(bigLog, 0);
+            Check(old == CrashReport.Tail(bigLog, CrashReport.MaxLog) && Encoding.UTF8.GetByteCount(old) == CrashReport.MaxLog, "crash log: 0 = its last 1 MB, as before");
+            string smallLog = Path.Combine(logDir, "small.log");
+            File.WriteAllText(smallLog, "[gpu] x\nshort\n");
+            Check(CrashReport.LogPart(smallLog, 256 * 1024) == "[gpu] x\nshort\n", "crash log: a short one sent whole");
+        }
+        finally { try { Directory.Delete(logDir, true); } catch { } }
+
         FileChecks();
 
         Console.WriteLine($"{passed} passed, {failed} failed");
