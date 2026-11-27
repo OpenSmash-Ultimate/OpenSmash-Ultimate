@@ -57,6 +57,51 @@ static struct { u64 va, size; } *map_sizes;
 static u32 map_count, map_cap, next_handle = 1, next_syncpoint = 20;
 static u64 next_va = 0x100000000ull;   /* bump allocator for VA requests without a fixed address */
 
+/* ---- (0.5.4) SSBU_NV_GUARD: the list of mappings checked, sync point ids kept in range ----
+ * Crash reports of 0.5.1 and 0.5.2 (the main thread as a match ends, also with no mods): an UnmapBuffer
+ * (unmap_range) or a MapBufferEx (map_range's mapped_as) read map_sizes[0] at a pointer that is no heap address -
+ * map_sizes itself, the static, had been overwritten (each time with map_count still plausible, the pointer's low
+ * four bits nearly always 0xb). Nothing in the program stores to map_sizes but map_range's realloc; the only
+ * indexed store that can reach it is submit()'s gpu_syncpt_max[files[fd].syncpoint] once a channel's sync point id
+ * is past SYNCPT_MAX (ids were never given back: each open of a channel or an engine took the next). That those
+ * sessions got that far is not proven (a boot opens 2 channels and 4 engine files per movie). So, with the guard on:
+ *  - ids of closed channels and engines go to the next ones, and none is ever SYNCPT_MAX or more (the 172nd open
+ *    is logged: before, the next id would have been out of range);
+ *  - a copy of the list's pointer, count and size is kept in initialised data (another section than the list's
+ *    statics); each use compares, and a list found overwritten is logged with the words around it (who wrote it)
+ *    and taken back from the copy, so the game goes on.
+ * SSBU_NV_GUARD=0: off (as 0.5.3). */
+static int nv_guard = -1;
+static int guard_on(void) { if (nv_guard < 0) { const char *e = getenv("SSBU_NV_GUARD"); nv_guard = !(e && *e == '0'); } return nv_guard; }
+static struct { void *sizes; u32 count, cap, magic; } as_keep = {NULL, 0, 0, 0x5341564Eu};   /* (initialised: .data) */
+static u64 as_repairs, syncpt_opens;
+static void as_kept(void) { if (nv_guard > 0) { as_keep.sizes = map_sizes; as_keep.count = map_count; as_keep.cap = map_cap; } }
+static void as_check(const char *where) {
+    if (!guard_on() || ((void *)map_sizes == as_keep.sizes && map_count == as_keep.count && map_cap == as_keep.cap)) return;
+    if (as_repairs++ < 3) {
+        char words[24 * 10 + 1];
+        int at = 0;
+        const volatile u32 *w = (const volatile u32 *)((uintptr_t)&map_sizes - 64);   /* (the pointer from word 16 on: "|") */
+        for (int i = 0; i < 24; i++) at += snprintf(words + at, sizeof words - (size_t)at, "%s%08x", i == 16 ? "|" : " ", w[i]);
+        fprintf(stderr, "[nvdrv] the GPU address space's list was overwritten (%s): pointer %#llx, count %u, size %u; kept %p, %u, %u "
+                        "- taken back (SSBU_NV_GUARD). Sync point ids made %u, opens %llu. The words from 64 bytes before the pointer:%s\n",
+                where, (unsigned long long)(uintptr_t)map_sizes, map_count, map_cap, as_keep.sizes, as_keep.count, as_keep.cap,
+                next_syncpoint, (unsigned long long)syncpt_opens, words);
+    }
+    map_sizes = as_keep.sizes; map_count = as_keep.count; map_cap = as_keep.cap;
+}
+static u32 syncpt_free[SYNCPT_MAX], nsyncpt_free;   /* (SSBU_NV_GUARD) the ids of closed channels and engines */
+static u32 syncpt_take(void) {   /* (lock held) */
+    if (!guard_on()) return next_syncpoint++;
+    if (++syncpt_opens == SYNCPT_MAX - 20)
+        fprintf(stderr, "[nvdrv] %u channels and engines opened: before 0.5.4 the next one's sync point id would have been out of range\n", SYNCPT_MAX - 20);
+    if (nsyncpt_free) return syncpt_free[--nsyncpt_free];
+    if (next_syncpoint < SYNCPT_MAX) return next_syncpoint++;
+    static int told;
+    if (!told++) fprintf(stderr, "[nvdrv] all %u sync point ids held by open devices: the next ones share them\n", SYNCPT_MAX - 20);
+    return 20 + (u32)(syncpt_opens % (SYNCPT_MAX - 20));
+}
+
 static BOOL CALLBACK init(PINIT_ONCE o, PVOID p, PVOID *ctx) {
     (void)o; (void)p; (void)ctx;
     InitializeCriticalSection(&lock);
@@ -117,16 +162,19 @@ static void set_pages(u64 va, u64 size, u64 guest) {
 }
 
 static void unmap_range(u64 va) {
+    as_check("unmap");
     for (u32 i = 0; i < map_count; i++)
         if (map_sizes[i].va == va) {
             set_pages(va, map_sizes[i].size, 0);
             map_sizes[i] = map_sizes[--map_count];
+            as_kept();
             return;
         }
 }
 
 /* Is [va, va + size) one mapping of guest memory from `guest` on already? */
 static int mapped_as(u64 va, u64 size, u64 guest) {
+    as_check("map");
     u32 i = 0;
     while (i < map_count && map_sizes[i].va != va) i++;
     if (i == map_count || map_sizes[i].size != size) return 0;
@@ -141,6 +189,7 @@ static void map_range(u64 va, u64 size, u64 guest) {
     if (map_count == map_cap) map_sizes = realloc(map_sizes, sizeof *map_sizes * (map_cap = map_cap * 2 + 1024));
     map_sizes[map_count].va = va;
     map_sizes[map_count++].size = size;
+    as_kept();
     set_pages(va, size, guest);
 }
 
@@ -513,13 +562,26 @@ HLE(NvOsDrvOpen) {
     if (fd == 256) rt_fatal("nvdrv: too many open device files");
     files[fd].kind = kind;
     files[fd].cls = cls;
-    if (kind == DEV_CHANNEL || kind == DEV_HOST1X) files[fd].syncpoint = next_syncpoint++;
+    if (kind == DEV_CHANNEL || kind == DEV_HOST1X) files[fd].syncpoint = syncpt_take();
     LeaveCriticalSection(&lock);
     if (rt_trace) fprintf(stderr, "[nvdrv] open %s -> %u\n", path, fd);
     c->x[0] = fd;
 }
 
-HLE(NvOsDrvClose) { if (c->x[0] < 256) files[c->x[0]].kind = 0; c->x[0] = NV_OK; }
+HLE(NvOsDrvClose) {
+    if (c->x[0] < 256 && guard_on() && (files[c->x[0]].kind == DEV_CHANNEL || files[c->x[0]].kind == DEV_HOST1X)) {
+        EnterCriticalSection(&lock);   /* (SSBU_NV_GUARD: its sync point id to the next one opened) */
+        u32 id = files[c->x[0]].syncpoint;
+        if (files[c->x[0]].kind && id >= 20 && id < SYNCPT_MAX && nsyncpt_free < SYNCPT_MAX) {
+            u32 k = 0;
+            while (k < nsyncpt_free && syncpt_free[k] != id) k++;
+            if (k == nsyncpt_free) syncpt_free[nsyncpt_free++] = id;
+        }
+        files[c->x[0]].kind = 0;
+        LeaveCriticalSection(&lock);
+    } else if (c->x[0] < 256) files[c->x[0]].kind = 0;
+    c->x[0] = NV_OK;
+}
 HLE(NvOsDrvIoctl) { c->x[0] = ioctl((u32)c->x[0], (u32)c->x[1], c->x[2], 0, 0, 0, 0); }
 HLE(NvOsDrvIoctl2) { c->x[0] = ioctl((u32)c->x[0], (u32)c->x[1], c->x[2], c->x[4], c->x[5], 0, 0); }
 HLE(NvOsDrvIoctl3) { c->x[0] = ioctl((u32)c->x[0], (u32)c->x[1], c->x[2], 0, 0, c->x[4], c->x[5]); }
