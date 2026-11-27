@@ -205,6 +205,40 @@ class UpdateGate(unittest.TestCase):
         self.assertTrue('tools/modmanager/x.py'.startswith(off))
 
 
+class PluginC(unittest.TestCase):
+    """tools/skyline.py c_stale: a plugin's C older than recomp.py's file, but made by a recompiler that does the same
+    (a link-step edit), stays current; a change of what it does, or SSBU_GEN_FINGERPRINT=0, makes it stale again."""
+    def test_by_meaning(self):
+        import skyline
+        tools = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tools)
+        for n in set(modcache.GENERATOR) | set(skyline.RECOMPILER):
+            shutil.copy(ROOT / 'tools' / n, tools / n)
+        table = tools / 'plugin' / 'g_module.c'
+        table.parent.mkdir()
+        table.write_text('/* C */\n')
+        old = (tools / 'recomp.py').stat().st_mtime_ns + 10**9
+        os.utime(table, ns=(old, old))
+        with mock.patch.object(skyline, 'HERE', str(tools)), mock.patch.object(modcache, 'TOOLS', str(tools)), \
+                mock.patch.dict(os.environ, {'SSBU_GEN_FINGERPRINT': '1'}):
+            self.assertFalse(skyline.c_stale(str(table)))   # (made after the recompiler's files: current, and marked)
+            self.assertTrue((table.parent / 'generator.txt').exists())
+            text = (tools / 'recomp.py').read_text(encoding='utf-8')
+            (tools / 'recomp.py').write_text(text.replace('def link(dirs, exe, rt_dir=None, steps=None):\n',
+                                                          'def link(dirs, exe, rt_dir=None, steps=None):\n    # an edit\n', 1),
+                                             encoding='utf-8', newline='\n')
+            later = old + 5 * 10**9
+            os.utime(tools / 'recomp.py', ns=(later, later))
+            self.assertFalse(skyline.c_stale(str(table)))   # (older now, by a recompiler that does the same)
+            with mock.patch.dict(os.environ, {'SSBU_GEN_FINGERPRINT': '0'}):
+                self.assertTrue(skyline.c_stale(str(table)))
+            (tools / 'lift.py').write_text((tools / 'lift.py').read_text(encoding='utf-8') + '\nA_NEW_NAME = 1\n',
+                                           encoding='utf-8', newline='\n')
+            os.utime(tools / 'lift.py', ns=(later, later))
+            self.assertTrue(skyline.c_stale(str(table)))   # (what the lifter does changed)
+            self.assertTrue(skyline.c_stale(str(tools / 'none' / 'g_module.c')))
+
+
 class ObjectDate(unittest.TestCase):
     """recomp._without_date: the game library's own two objects are compared without the compile time clang-cl writes
     into their COFF header (the same code compiled again keeps the library), and nothing else is left out."""

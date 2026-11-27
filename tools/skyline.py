@@ -290,9 +290,35 @@ def module_of(p, source, record, prefer=None):
 
 def c_stale(table):
     """Whether a plugin's C (its g_module.c) is missing or older than the recompiler: a fix made in it
-    since reaches the plugin only when its C is made again."""
+    since reaches the plugin only when its C is made again. (SSBU_GEN_FINGERPRINT, on unless 0) Older than its
+    files but made by a recompiler that does the same (tools/modcache.py meaning: an update that changed only
+    recomp.py's link step, a comment or a message) is current: generator.txt beside it says which one made it.
+    Without that, every mod plugin was translated again at every update that touched recomp.py. 0: by date only."""
     made_by = max(os.path.getmtime(os.path.join(HERE, n)) for n in RECOMPILER if os.path.exists(os.path.join(HERE, n)))
-    return not os.path.exists(table) or os.path.getmtime(table) < made_by
+    if not os.path.exists(table):
+        return True
+    import modcache
+    if not modcache.by_meaning():
+        return os.path.getmtime(table) < made_by
+    mark = os.path.join(os.path.dirname(table), "generator.txt")
+    now = modcache.fingerprint("plugin C", legacy=False)
+    if os.path.getmtime(table) >= made_by:   # (made by these very files: say so, for a later recompiler that does the same)
+        try:
+            with open(mark, encoding="utf-8") as f:
+                if f.read().strip() == now:
+                    return False
+        except OSError:
+            pass
+        try:
+            modcache.replace_file(mark, now + "\n")
+        except OSError:
+            pass
+        return False
+    try:
+        with open(mark, encoding="utf-8") as f:
+            return f.read().strip() != now
+    except OSError:
+        return True
 
 
 def build_jobs():
