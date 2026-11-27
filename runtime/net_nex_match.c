@@ -633,10 +633,22 @@ static uint32_t ar_arena_id(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     no_struct_end(out, at);
     return 0;
 }
-/* 56 (SSBU's own): an arena ID -> its gathering */
+/* 56 (SSBU's own): an arena ID -> its gathering. The game sends the ID inside a Structure: version 0, its length,
+ * the String, then 8 bytes not read here (#602; read as a bare String, the Structure's header was taken for the
+ * String's length and the search never ran). A bare String is read as before. SSBU_NEX_ARENA_STRUCT=0: only the
+ * bare String (the old parse). */
+static int arena_struct_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_NEX_ARENA_STRUCT"); on = !(e && e[0] == '0'); }
+    return on;
+}
 static uint32_t ar_56(NexServer *s, NexConn *c, NexIn *in, NexOut *out) {
     NexIn t = ni_make(in->d + in->p, in->end - in->p, in->a);
     in->p = in->end;
+    if (t.end - t.p >= 5 && t.d[t.p] == 0 && arena_struct_on()) {   /* (a bare String starting with 0 is 256 bytes or more) */
+        NexIn whole = t, st = ni_struct(&whole, NULL);
+        if (!whole.err && whole.p == whole.end) t = st;            /* (the Structure is the whole argument) */
+    }
     char *text = ni_str(&t);
     uint32_t gid = 0;
     if (!t.err) {
