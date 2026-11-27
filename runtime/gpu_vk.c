@@ -2024,6 +2024,136 @@ static Job *jobs_head, *jobs_tail;
 static volatile LONG jobs_pending;
 static u32 nmakers;
 
+/* ---- the compiling threads: what they make (crash reports, SSBU_VK_SKIP_PIPE) and a landing past their stacks' top ----
+ * The commonest graphics crash of 0.5.3 on GeForce RTX 50 cards (5060 to 5070 Ti, drivers 610 to 621): NVIDIA's shader
+ * compiler (nvgpucomp64.dll, called by the Vulkan driver nvoglv64.dll) reads 0 to 8 bytes PAST THE TOP of the stack of
+ * the thread that asked for the pipeline - "reading address <stack top + 0/4/8>", "not a guest address", with the stack
+ * pointer some 16 to 18 KB below that top every time. Those threads are ours (seen in the reports: a pool of as many
+ * threads as makers_start starts, its others waiting for jobs; and the addresses fall on the 64 MB grid of the
+ * makers' and warm threads' stacks, one reserved right after another, so the page past one stack's top is the
+ * uncommitted bottom of the next one's). On a thread with more frames above the driver's, the same read would land
+ * in that thread's own stack and go unnoticed - an inference, the driver's code was not looked at. It came in play
+ * (the warm start capped at WARM_CAPPED_MB and long finished) as well as during warm starts.
+ *
+ * SSBU_VK_STACK_LANDING (default 1; 0: as before): each thread that makes pipelines (the makers, the warm threads,
+ * the preparation) first puts readable zero memory right past the top of its stack: a 64 KB block of its own where
+ * that address space is free, or, where the bottom of another of these threads' stacks is there (never used: the
+ * stacks are 64 MB and their bottom pages are only reached by an overflow), that one page committed read-only. The
+ * threads are started one at a time, each once it has done so, so the next one's stack is not put in that place first.
+ * Nothing else changes; a stray read there now reads zeros. Whether that is enough for the driver to go on is not
+ * known (not reproduced here: no RTX 50 card).
+ *
+ * The pipeline each such thread is making is noted too (two stores around the driver's call; no log line), and a
+ * crash or freeze report lists them (vk_report_compiles): its record sum (the 8 hex digits the warm list's groups
+ * and the "made in play" lines name) and its programs' hashes. SSBU_VK_SKIP_PIPE=<sum or program hash>[,...]: those
+ * pipelines (and compute programs) are not given to the driver, in the warm start or in play; a draw that needs one
+ * is skipped, as one whose pipeline the driver could not make. Unset: nothing skipped. */
+static int stack_landing_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_VK_STACK_LANDING"); v = !(e && *e == '0'); }
+    return v;
+}
+#define LANDING_BYTES 0x10000
+static void *volatile compile_stacks[256];   /* (the allocation bases of these threads' stacks) */
+static volatile LONG ncompile_stacks;
+static volatile LONG64 landing_own, landing_shared, landing_none;
+static void stack_landing(void) {
+    if (!stack_landing_on()) return;
+    u8 *top = (u8 *)((NT_TIB *)NtCurrentTeb())->StackBase;
+    MEMORY_BASIC_INFORMATION mine, above;
+    if (VirtualQuery(top - 1, &mine, sizeof mine)) {
+        LONG i = InterlockedIncrement(&ncompile_stacks) - 1;
+        if (i < (LONG)(sizeof compile_stacks / sizeof *compile_stacks)) compile_stacks[i] = mine.AllocationBase;
+    }
+    if (!VirtualQuery(top, &above, sizeof above)) { InterlockedIncrement64(&landing_none); return; }
+    if (above.State == MEM_FREE && above.RegionSize >= LANDING_BYTES && VirtualAlloc(top, LANDING_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READONLY)) {
+        InterlockedIncrement64(&landing_own);
+        return;
+    }
+    if (above.State == MEM_COMMIT && (above.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+        InterlockedIncrement64(&landing_shared);   /* (readable already) */
+        return;
+    }
+    if (above.State == MEM_RESERVE && above.Type == MEM_PRIVATE && above.AllocationBase == (void *)top) {
+        LONG n = ncompile_stacks < (LONG)(sizeof compile_stacks / sizeof *compile_stacks) ? ncompile_stacks : (LONG)(sizeof compile_stacks / sizeof *compile_stacks);
+        for (LONG i = 0; i < n; i++)
+            if (compile_stacks[i] == (void *)top) {   /* (the bottom of another compiling thread's stack) */
+                if (VirtualAlloc(top, 0x1000, MEM_COMMIT, PAGE_READONLY)) { InterlockedIncrement64(&landing_shared); return; }
+                break;
+            }
+    }
+    InterlockedIncrement64(&landing_none);
+}
+typedef struct CompileStart { LPTHREAD_START_ROUTINE fn; void *arg; HANDLE ready; } CompileStart;
+static DWORD WINAPI compile_thread_main(void *p) {
+    CompileStart s = *(CompileStart *)p;
+    stack_landing();
+    SetEvent(s.ready);   /* (the creator's: it frees p once this is set) */
+    return s.fn(s.arg);
+}
+/* CreateThread for a thread that makes pipelines: with SSBU_VK_STACK_LANDING its landing made before it is returned. */
+static HANDLE compile_thread(SIZE_T stack, DWORD flags, LPTHREAD_START_ROUTINE fn, void *arg) {
+    if (!stack_landing_on()) return CreateThread(NULL, stack, fn, arg, flags, NULL);
+    CompileStart *s = malloc(sizeof *s);
+    HANDLE ready = s ? CreateEventW(NULL, TRUE, FALSE, NULL) : NULL;
+    if (!ready) { free(s); return CreateThread(NULL, stack, fn, arg, flags, NULL); }
+    s->fn = fn; s->arg = arg; s->ready = ready;
+    HANDLE t = CreateThread(NULL, stack, compile_thread_main, s, flags, NULL);
+    if (t) {
+        HANDLE both[2] = {ready, t};
+        if (WaitForMultipleObjects(2, both, FALSE, 5000) == WAIT_TIMEOUT) s = NULL;   /* (not seen started: s left to it) */
+    }
+    if (s) { CloseHandle(ready); free(s); }
+    return t;
+}
+
+/* What each compiling thread is making: a slot per thread, set before the driver's call and cleared after. */
+#define MAKING_SLOTS 128
+static struct { volatile DWORD tid; volatile LONG busy; u32 sum; u8 kind; u64 vs, ps, since; } making[MAKING_SLOTS];
+static volatile LONG making_n;
+static _Thread_local int making_at = -1;
+enum { MAKING_PIPE = 1, MAKING_WARM_PIPE, MAKING_COMPUTE, MAKING_WARM_COMPUTE };
+static void making_begin(int kind, u32 sum, u64 vs, u64 ps) {
+    if (making_at < 0) {
+        LONG i = InterlockedIncrement(&making_n) - 1;
+        making_at = i < MAKING_SLOTS ? (int)i : MAKING_SLOTS;
+        if (making_at < MAKING_SLOTS) making[making_at].tid = GetCurrentThreadId();
+    }
+    if (making_at >= MAKING_SLOTS) return;
+    making[making_at].kind = (u8)kind; making[making_at].sum = sum; making[making_at].vs = vs; making[making_at].ps = ps;
+    making[making_at].since = GetTickCount64();
+    InterlockedExchange(&making[making_at].busy, 1);
+}
+static void making_end(void) { if (making_at >= 0 && making_at < MAKING_SLOTS) InterlockedExchange(&making[making_at].busy, 0); }
+
+/* SSBU_VK_SKIP_PIPE: record sums (up to 8 hex digits) and program hashes (more), as the crash reports name them. */
+static u64 skip_pipes[64];
+static int nskip_pipes = -1;
+static volatile LONG64 vk_stat_skip_listed;
+static int pipe_skip_listed(u32 sum, u64 vs, u64 ps) {
+    if (nskip_pipes < 0) {
+        int n = 0;
+        const char *e = getenv("SSBU_VK_SKIP_PIPE");
+        for (const char *p = e; p && *p && n < 64;) {
+            char *end;
+            if (*p == ',' || *p == ' ' || *p == ';') { p++; continue; }
+            unsigned long long v = strtoull(p, &end, 16);
+            if (end == p) break;
+            if (v) skip_pipes[n++] = v;
+            p = end;
+        }
+        if (n) fprintf(stderr, "[vulkan] SSBU_VK_SKIP_PIPE: %d pipelines or programs are not given to the driver (draws that need them are skipped)\n", n);
+        nskip_pipes = n;
+    }
+    for (int i = 0; i < nskip_pipes; i++)
+        if ((sum && skip_pipes[i] == sum) || (vs && skip_pipes[i] == vs) || (ps && skip_pipes[i] == ps)) {
+            if (InterlockedIncrement64(&vk_stat_skip_listed) <= 10)
+                fprintf(stderr, "[vulkan] SSBU_VK_SKIP_PIPE: pipeline %08x (vs %016llx ps %016llx) not made\n", sum, (unsigned long long)vs, (unsigned long long)ps);
+            return 1;
+        }
+    return 0;
+}
+
 static DWORD WINAPI maker_main(void *unused) {
     (void)unused;
     for (;;) {
@@ -2059,7 +2189,7 @@ static void makers_start(void) {
     if (want > 6) want = 6;
     nmakers = 0;
     for (u32 i = 0; i < want; i++) {
-        HANDLE t = CreateThread(NULL, 64ull << 20, maker_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+        HANDLE t = compile_thread(64ull << 20, STACK_SIZE_PARAM_IS_A_RESERVATION, maker_main, NULL);   /* (SSBU_VK_STACK_LANDING) */
         if (!t) continue;
         nmakers++;
         SetThreadPriority(t, THREAD_PRIORITY_BELOW_NORMAL);
@@ -2473,8 +2603,13 @@ static void shader_make(VShader *s, const char *hlsl) {
         VkComputePipelineCreateInfo cpi = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
                                            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", NULL},
                                            cs_layout, VK_NULL_HANDLE, -1};
-        made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &s->compute) == VK_SUCCESS;
-        if (!made) fprintf(stderr, "[vulkan] %s: cannot make its pipeline\n", s->name);
+        if (nskip_pipes && pipe_skip_listed(0, s->hash, 0)) made = 0;   /* (SSBU_VK_SKIP_PIPE) */
+        else {
+            making_begin(MAKING_COMPUTE, 0, s->hash, 0);   /* (for a crash report) */
+            made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &s->compute) == VK_SUCCESS;
+            making_end();
+            if (!made) fprintf(stderr, "[vulkan] %s: cannot make its pipeline\n", s->name);
+        }
     }
     InterlockedExchange(&s->state, made ? 1 : 2);   /* (the module written before: a full barrier) */
 }
@@ -3333,6 +3468,7 @@ static void warm_list_pipe(const Pipe *e);
 static u64 vk_stat_pipeline_failures, vk_stat_skip_pipeline;
 static volatile LONG64 pipeline_ns;   /* (the makers' time making pipelines) */
 
+static u32 pipe_sum(const Pipe *e);   /* (below, with the warm list's records) */
 static void pipe_make(Pipe *e) {
     const PipeKey *k = &e->key;
     VkPipelineShaderStageCreateInfo st[2] = {
@@ -3372,8 +3508,15 @@ static void pipe_make(Pipe *e) {
     VkGraphicsPipelineCreateInfo pci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &ri, 0, k->ps ? 2u : 1u, st, &vi, &ia, NULL, &vp, &rs, &ms,
                                         &ds, &cb, &dy, gfx_layout, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, -1};
     VkPipeline p;
+    u32 sum = pipe_sum(e);
+    if (nskip_pipes && pipe_skip_listed(sum, e->wvs.hash, e->wps.hash)) {   /* (SSBU_VK_SKIP_PIPE: as one the driver could not make) */
+        InterlockedExchange(&e->state, 2);
+        return;
+    }
     u64 t0 = rt_clock_ns();
+    making_begin(e->warm ? MAKING_WARM_PIPE : MAKING_PIPE, sum, e->wvs.hash, e->wps.hash);   /* (for a crash report) */
     VkResult r = vkCreateGraphicsPipelines(device, pipeline_cache, 1, &pci, NULL, &p);
+    making_end();
     InterlockedAdd64(&pipeline_ns, (LONG64)(rt_clock_ns() - t0));
     if (r != VK_SUCCESS) {
         static volatile LONG told;
@@ -3525,6 +3668,18 @@ static void make_note_pipe(const Pipe *e, int made, double ms) {
             desc_hash(&e->key, sizeof e->key), (unsigned long long)e->wvs.hash, (unsigned long long)e->wps.hash, ms,
             !made ? "warm, being made" : listed < 0 ? "not listable" : listed ? "LISTED" : "not listed",
             e->state == 1 ? "ready" : e->state == 2 ? "failed" : "not ready: draw skipped", sum, rt_now_ns() / 1e9);
+}
+
+/* The pipeline's record sum, as make_note_pipe prints it (the warm list's checksum: the groups file names records by it):
+ * its programs' keys and its state, the per-process module handles left out. Only a pipeline whose programs are known
+ * (glslang's, or the warm list's) has one that is the same from one start to the next. */
+static u32 pipe_sum(const Pipe *e) {
+    WarmRecord r;
+    memset(&r, 0, sizeof r);
+    r.kind = 1; r.vs = e->wvs; r.ps = e->wps;
+    memcpy(&r.key, &e->key, sizeof r.key);
+    r.key.vs = r.key.ps = VK_NULL_HANDLE;
+    return desc_hash(&r.vs, sizeof r - offsetof(WarmRecord, vs));
 }
 
 static void warm_list_add(WarmRecord *r) {
@@ -4226,7 +4381,7 @@ static void prepare_begin(void) {
         InterlockedExchange(&prep_state, 2);
         return;
     }
-    HANDLE t = CreateThread(NULL, 0, prep_main, NULL, 0, NULL);
+    HANDLE t = compile_thread(0, 0, prep_main, NULL);   /* (it makes compute programs' pipelines: SSBU_VK_STACK_LANDING) */
     if (!t) InterlockedExchange(&prep_state, 2);
     else CloseHandle(t);
 }
@@ -4254,7 +4409,12 @@ static void warm_load(WarmShader *w) {
             VkComputePipelineCreateInfo cpi = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
                                                {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", NULL},
                                                cs_layout, VK_NULL_HANDLE, -1};
-            made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &w->compute) == VK_SUCCESS;
+            if (nskip_pipes && pipe_skip_listed(0, w->k.hash, 0)) made = 0;   /* (SSBU_VK_SKIP_PIPE) */
+            else {
+                making_begin(MAKING_WARM_COMPUTE, 0, w->k.hash, 0);   /* (for a crash report) */
+                made = vkCreateComputePipelines(device, pipeline_cache, 1, &cpi, NULL, &w->compute) == VK_SUCCESS;
+                making_end();
+            }
             if (!made) { vkDestroyShaderModule(device, module, NULL); w->compute = VK_NULL_HANDLE; }
         }
         if (made) w->module = module;
@@ -4333,6 +4493,7 @@ static void warm_one(u32 i) {
     if (!e) { InterlockedIncrement(&warm_left); return; }
     e->key = key;
     e->warm = 1;
+    e->wvs = r->vs; e->wps = r->ps;   /* (its programs: pipe_sum, crash reports, SSBU_VK_SKIP_PIPE; listable stays 0) */
     int found = 0, put = 0;
     AcquireSRWLockExclusive(&pipes_lock);
     for (u32 n = 0; n < PIPE_SLOTS && pipes[h] && !found; n++, h = (h + 1) & (PIPE_SLOTS - 1))
@@ -4481,7 +4642,7 @@ static void warm_threads_go(u32 n, int first) {
     if (!mark) fprintf(stderr, "[vulkan] warm start: no marker file (%s): one that does not finish will not be noticed\n", warm_marker);
     for (u32 i = 0; i < n; i++) {
         if (i < warm_threads_bg) InterlockedIncrement(&warm_workers);
-        HANDLE t = CreateThread(NULL, 64ull << 20, warm_main, (void *)(uintptr_t)i, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+        HANDLE t = compile_thread(64ull << 20, STACK_SIZE_PARAM_IS_A_RESERVATION, warm_main, (void *)(uintptr_t)i);   /* (SSBU_VK_STACK_LANDING) */
         if (!t) {
             if (i < warm_threads_bg) InterlockedDecrement(&warm_workers);
             if (!InterlockedDecrement(&warm_running)) {   /* (no thread at all: at the start, nothing is loaded) */
@@ -6231,7 +6392,28 @@ static void vk_resident_written(u64 va, u64 bytes) {
 static int vk_draw_logging(void) { return 0; }
 static DWORD vk_lock_owner(void) { return (DWORD)(uintptr_t)lock.OwningThread; }
 static DWORD vk_last_enter_thread(void) { return last_enter_thread; }
-static void vk_report_compiles(void (*line)(const char *text)) { (void)line; }
+/* For a crash or freeze report: the pipelines the compiling threads are giving the driver now (making_begin), and the
+ * landings past their stacks (SSBU_VK_STACK_LANDING). Only snprintf and the line: the faulting thread may hold locks. */
+static void vk_report_compiles(void (*line)(const char *text)) {
+    static const char *const what[] = {"", "pipeline", "pipeline (warm start)", "compute program", "compute program (warm start)"};
+    char text[300];
+    u64 now = GetTickCount64();
+    int busy = 0;
+    LONG n = making_n < MAKING_SLOTS ? making_n : MAKING_SLOTS;
+    for (LONG i = 0; i < n; i++) {
+        if (!making[i].busy) continue;
+        if (!busy++) line("pipelines the graphics driver was making at the time (SSBU_VK_SKIP_PIPE=<sum> leaves one out):\n");
+        u32 k = making[i].kind < sizeof what / sizeof *what ? making[i].kind : 0;
+        snprintf(text, sizeof text, "  thread %lu: %s sum %08x, vs %016llx ps %016llx, for %.1f s\n", (unsigned long)making[i].tid, what[k],
+                 making[i].sum, (unsigned long long)making[i].vs, (unsigned long long)making[i].ps, (now - making[i].since) / 1000.0);
+        line(text);
+    }
+    if (stack_landing_on() && (landing_own || landing_shared || landing_none)) {
+        snprintf(text, sizeof text, "the compiling threads' landings past their stacks (SSBU_VK_STACK_LANDING): %lld of their own, %lld shared, %lld none\n",
+                 (long long)landing_own, (long long)landing_shared, (long long)landing_none);
+        line(text);
+    }
+}
 
 static void vk_status_lines(void) {
     /* the drawing thread's own run time (preemption left out: a steadier measure than the times above on a busy
