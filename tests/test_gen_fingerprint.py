@@ -205,5 +205,23 @@ class UpdateGate(unittest.TestCase):
         self.assertTrue('tools/modmanager/x.py'.startswith(off))
 
 
+class ObjectDate(unittest.TestCase):
+    """recomp._without_date: the game library's own two objects are compared without the compile time clang-cl writes
+    into their COFF header (the same code compiled again keeps the library), and nothing else is left out."""
+    def test_the_header_time_only(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+
+        def obj(name, head, rest=b'code'):
+            (d / name).write_bytes(head + rest)
+            return recomp._without_date(str(d / name))
+        x64 = bytes((0x64, 0x86, 3, 0))
+        self.assertEqual(obj('a.obj', x64 + b'\x01\x02\x03\x04'), obj('b.obj', x64 + b'\x09\x09\x09\x09'))
+        self.assertNotEqual(obj('a.obj', x64 + b'\x01\x02\x03\x04'), obj('b.obj', x64 + b'\x01\x02\x03\x04', b'other'))
+        big = bytes((0, 0, 0xFF, 0xFF, 2, 0, 0x64, 0x86))
+        self.assertEqual(obj('c.obj', big + b'\x01\x02\x03\x04'), obj('d.obj', big + b'\x05\x06\x07\x08'))
+        self.assertNotEqual(obj('e.obj', b'ELF!\x01\x02\x03\x04'), obj('f.obj', b'ELF!\x05\x06\x07\x08'))   # (not COFF: as it is)
+
+
 if __name__ == '__main__':
     unittest.main()

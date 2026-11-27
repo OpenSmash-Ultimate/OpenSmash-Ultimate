@@ -73,7 +73,7 @@ def place(name, size, rows):
 DRIVER_ONLY = {"recomp.py": ("link", "link_compiled", "compile_dir", "compile_dirs", "plan", "stale_files", "game_key",
                              "c_needed", "main_kind_room", "one_queue", "scripts_level", "build_folder", "coverage",
                              "emit", "check", "library_objects", "_library_inputs", "_library_record", "library_stamp",
-                             "library_kept", "library_touch", "compile_and_link")}
+                             "library_kept", "library_touch", "compile_and_link", "_without_date")}
 
 
 def by_meaning():

@@ -1566,14 +1566,30 @@ def library_objects(dirs, rt_dir):
     return [os.path.join(rt_dir, game_dll.TABLES[:-2] + ".obj"), os.path.join(rt_dir, "nro_table.obj")] + game
 
 
+def _without_date(obj):
+    """An object file's bytes without the time its COFF header records (clang-cl writes the time of the compile there):
+    the same code compiled again reads the same."""
+    with open(obj, "rb") as f:
+        b = bytearray(f.read())
+    if b[:4] == bytes((0, 0, 0xFF, 0xFF)) and len(b) >= 12:   # (/bigobj's header)
+        b[8:12] = bytes(4)
+    elif len(b) >= 8 and b[:2] in (bytes((0x64, 0x86)), bytes((0x4C, 0x01)), bytes((0x64, 0xAA))):   # (x64, x86, arm64)
+        b[4:8] = bytes(4)
+    return bytes(b)
+
+
 def _library_inputs(objs, lib):
-    """A digest of what the game library is linked from: the link command, and each object's path, size and time
-    (an object is only ever written by its compile)."""
+    """A digest of what the game library is linked from: the link command, and each object's path with its size and
+    time (an object is only ever written by its compile), or for the library's two own small ones their content."""
     import cc
     h = hashlib.sha256("\0".join(cc.library_command("objects.rsp", lib)).encode("utf-8", "surrogateescape"))
-    for o in objs:
+    for n, o in enumerate(objs):
         st = os.stat(o)
-        h.update(f"\n{os.path.abspath(o)}\0{st.st_size}\0{st.st_mtime_ns}".encode("utf-8", "surrogateescape"))
+        if n < 2:   # (game_tables.obj, nro_table.obj: compiled again whenever a runtime header changes, to the same code)
+            what = hashlib.sha256(_without_date(o)).hexdigest()
+        else:
+            what = f"{st.st_size}\0{st.st_mtime_ns}"
+        h.update(f"\n{os.path.abspath(o)}\0{what}".encode("utf-8", "surrogateescape"))
     return h.hexdigest()
 
 
@@ -1698,29 +1714,39 @@ def link(dirs, exe, rt_dir=None, steps=None):
     # the runtime is compiled here as before.
     tag = os.environ.get("SSBU_PREBUILT_RUNTIME", "").strip()
     library = library_objects(dirs, rt_dir)
-    if GAME_DLL and tag not in ("", "0") and not any(obj in library_side for _src, obj, _opt in every) \
-            and library_kept(library, game_lib):
-        try:
-            import runtime_fetch
-            runtime_fetch.fetch(tag, build=os.path.dirname(os.path.abspath(exe)))
-            library_touch(game_lib, library)
-            print(f"the game library is the one linked from these objects, and {tag}'s prebuilt runtime is in place: "
-                  f"nothing compiled or linked ({time.time() - t0:,.0f}s)")
-            return True
-        except Exception as e:   # (runtime_fetch.Error, OSError, a check that timed out: never a reason to stop the build)
-            print(f"the prebuilt runtime of {tag} could not be put in place ({e}): the runtime is compiled here")
-    if objcache.summary(why):
-        print(f"runtime: {objcache.summary(why)}")
-    record.forget([obj for _src, obj, _opt in every])
-    for _src, obj, _opt in every:   # (as compile_dir: a file that fails to compile leaves no old object)
-        if os.path.exists(obj):
-            os.remove(obj)
     failures, own = [], steps is None
     steps = steps or ladder.Ladder(progress.level_cost, "clang-cl", memory=ladder.memory_setting())
-    try:
+
+    def compile_now(chosen):   # (as compile_dir: a file that fails to compile leaves no old object)
+        record.forget([obj for _src, obj, _opt in chosen])
+        for _src, obj, _opt in chosen:
+            if os.path.exists(obj):
+                os.remove(obj)
         for flags, group in jobs.items():
-            failures += cc.compile_each(group, 4, compiled=lambda job, _level: record.compiled(job[1], keys[job[1]]),
-                                        flags=None if flags is None else list(flags), steps=steps)
+            group = [job for job in group if job in chosen]
+            if group:
+                failures.extend(cc.compile_each(group, 4, compiled=lambda job, _level: record.compiled(job[1], keys[job[1]]),
+                                                flags=None if flags is None else list(flags), steps=steps))
+    try:
+        if GAME_DLL and tag not in ("", "0"):
+            # the library's two small objects first (compiled again when a runtime header changed, to the same bytes,
+            # which library_kept goes by), then whether the library stays as it is
+            first = [job for job in every if job[1] in library_side]
+            compile_now(first)
+            every = [job for job in every if job not in first]
+            if not failures and library_kept(library, game_lib):
+                try:
+                    import runtime_fetch
+                    runtime_fetch.fetch(tag, build=os.path.dirname(os.path.abspath(exe)))
+                    library_touch(game_lib, library)
+                    print(f"the game library is the one linked from these objects, and {tag}'s prebuilt runtime is in place: "
+                          f"nothing else compiled or linked ({time.time() - t0:,.0f}s)")
+                    return True
+                except Exception as e:   # (runtime_fetch.Error, OSError, a check that timed out: never a reason to stop the build)
+                    print(f"the prebuilt runtime of {tag} could not be put in place ({e}): the runtime is compiled here")
+        if objcache.summary(why):
+            print(f"runtime: {objcache.summary(why)}")
+        compile_now(every)
     finally:
         if own:
             steps.end(os.path.dirname(os.path.abspath(exe)))
@@ -1772,7 +1798,7 @@ def link(dirs, exe, rt_dir=None, steps=None):
         if glslang_lib.have():
             glslang_lib.build(os.path.join(os.path.dirname(os.path.abspath(exe)), glslang_lib.DLL_NAME))
     print(f"linked {len(objs)} objects into {exe} ({os.path.getsize(exe) / 1048576:,.0f} MB) in {time.time() - t0:,.0f}s")
-    if GAME_DLL:
+    if GAME_DLL and not kept:
         print(f"linked {len(library)} objects into {game_lib} ({os.path.getsize(game_lib) / 1048576:,.0f} MB)")
     return True
 

@@ -360,7 +360,7 @@ class WindowsLink(made_up.Folder):
         self.assertEqual((runs, self.linked, self.libraries), ([], [], []))
         self.assertEqual(fetched, [('v9.9.9', str(self.dir / 'build'))])
         self.assertEqual(self.exe.read_bytes(), b'MZ prebuilt')
-        self.assertIn("v9.9.9's prebuilt runtime is in place: nothing compiled or linked", self.said)
+        self.assertIn("v9.9.9's prebuilt runtime is in place: nothing else compiled or linked", self.said)
 
         def refused(tag, build=None, **_kw):
             raise runtime_fetch.Error('offline')
@@ -378,6 +378,13 @@ class WindowsLink(made_up.Folder):
             self.link(True)
         self.assertEqual(len(fetched), 1)
         self.assertEqual(len(self.libraries), 1)
+        # a runtime header changed: the library's two own objects compile again, to the same bytes, and it still stays
+        made_up.write(self.runtime / 'host.h', '#pragma once\n#include "module.h"\n/* changed */\n')
+        with mock.patch.dict(os.environ, {'SSBU_PREBUILT_RUNTIME': 'v9.9.9'}), mock.patch.object(runtime_fetch, 'fetch', fetch):
+            ok, runs = self.link(True)
+        self.assertTrue(ok, self.said)
+        self.assertEqual((runs, self.linked, self.libraries), (['game_tables.c /O1', 'nro_table.c /O1'], [], []))
+        self.assertEqual(len(fetched), 2)
 
     def test_back_and_forth(self):
         """Without the switch the build is what it was: the runtime compiled again (its command changed), the game's
