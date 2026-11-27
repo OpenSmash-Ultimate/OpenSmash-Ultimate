@@ -612,7 +612,7 @@ class GenerateOnlyTests(unittest.TestCase):
                 build=lambda nso, target, jobs, per_file, imports=None: done.append(('build', os.path.basename(target))),
                 compile_dirs=compile_dirs,
                 link=lambda dirs, exe, steps=None: done.append(('link', exe)) or True,
-                modcache=types.SimpleNamespace(build_info=lambda t: None, find_built=lambda *x: None,
+                modcache=types.SimpleNamespace(build_info=lambda t: None, find_built=lambda *x: None, by_meaning=lambda: False,
                                                write_stamp=lambda t, *x: stamps.append(os.path.basename(t))))
             no_title = unittest.mock.patch.object(g['progress'], 'save_title', return_value=None)   # (the bar's)
             with contextlib.redirect_stdout(io.StringIO()), no_title:
