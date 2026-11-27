@@ -439,3 +439,91 @@ HLE(_ZN2nn3hid30GetActualVibrationGcErmCommandEPNS0_21VibrationGcErmCommandERKNS
     u32 id = ld32(c->x[1]) >> 8 & 0xFF;
     st32(c->x[0], id < PAD_SLOTS ? gc_erm_sent[id] : 0);
 }
+
+/* ---- what only Skyline plugins ask for: keyboard, mouse, the plural npad reads ----------
+ * The game never calls these; a plugin does (imgui: nn::hid::InitializeKeyboard at start, then its input each frame).
+ * The SDK's own code for them asks sm for the "hid" service, which nothing provides here (runtime/ipc.c), and the
+ * game stops at nnMain with result 0xe15 (sm, not registered): issue #618. Answered here instead: no keyboard and no
+ * mouse connected (the keyboard plays as a controller, above), and the npad states as a plugin's look at this PC's
+ * own controllers - never the game's reads: no rollback tape (rb_pad), no SSBU_SEQ step, no sampling number of the
+ * game's, so a plugin's polling changes nothing the game reads. SSBU_HID_PLUGIN=0 runs the SDK's own code again. */
+static int hid_plugin_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("SSBU_HID_PLUGIN");
+        on = !(v && *v == '0');
+        if (!on) fprintf(stderr, "[hid] SSBU_HID_PLUGIN=0: a plugin's keyboard, mouse and plural npad reads run the SDK's own code\n");
+    }
+    return on;
+}
+static volatile LONG64 plugin_sampling;
+static void hid_plugin_note(const char *what) {
+    static volatile LONG seen;
+    if (InterlockedIncrement(&seen) <= 4) fprintf(stderr, "[hid] a plugin calls nn::hid::%s: answered natively (no hid service here)\n", what);
+}
+
+/* KeyboardState { s64 sampling; u32 modifiers; u32 attributes; u8 keys[32] } (0x30), attributes 0: not connected. */
+enum { KEYBOARD_STATE = 0x30, MOUSE_STATE = 0x28 };
+static void keyboard_none(u64 out) { memset(P(void, out), 0, KEYBOARD_STATE); st64(out, (u64)InterlockedIncrement64(&plugin_sampling)); }
+/* MouseState { s64 sampling; s32 x, y, dx, dy, wheel dx, wheel dy; u32 buttons; u32 attributes } (0x28): not connected. */
+static void mouse_none(u64 out) { memset(P(void, out), 0, MOUSE_STATE); st64(out, (u64)InterlockedIncrement64(&plugin_sampling)); }
+/* (out, int count) -> int written: one state, the newest. */
+static void states_one(Cpu *c, void (*fill)(u64)) {
+    if ((i32)c->x[1] < 1 || !c->x[0]) { c->x[0] = 0; return; }
+    fill(c->x[0]);
+    c->x[0] = 1;
+}
+
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
+HLE_WRAP_EXPORT(_ZN2nn3hid18InitializeKeyboardEv) { if (!hid_plugin_on()) { orig(c); return; } hid_plugin_note("InitializeKeyboard"); }
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
+HLE_WRAP_EXPORT(_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE) { if (!hid_plugin_on()) { orig(c); return; } keyboard_none(c->x[0]); }
+/* signature: 16 words, sha256 d2a2a17e9b4f7f50 */
+HLE_WRAP_EXPORT(_ZN2nn3hid17GetKeyboardStatesEPNS0_13KeyboardStateEi) { if (!hid_plugin_on()) { orig(c); return; } states_one(c, keyboard_none); }
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
+HLE_WRAP_EXPORT(_ZN2nn3hid15InitializeMouseEv) { if (!hid_plugin_on()) { orig(c); return; } hid_plugin_note("InitializeMouse"); }
+/* signature: 16 words, sha256 3d41408d9b2f3b39 */
+HLE_WRAP_EXPORT(_ZN2nn3hid13GetMouseStateEPNS0_10MouseStateE) { if (!hid_plugin_on()) { orig(c); return; } mouse_none(c->x[0]); }
+/* signature: 16 words, sha256 d2a2a17e9b4f7f50 */
+HLE_WRAP_EXPORT(_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi) { if (!hid_plugin_on()) { orig(c); return; } states_one(c, mouse_none); }
+
+/* A plugin's look at controller `id` in `style` (the layout of npad_state): this PC's pad and keyboard while the
+ * window has focus, nothing while the menu or the shader preparation holds the input. */
+static void npad_peek(u64 out, u32 id, u32 style, u32 size) {
+    u64 buttons = 0;
+    i32 lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
+    u32 attributes = 0;
+    memset(P(void, out), 0, size);
+    if (style && id < PAD_SLOTS && !rb_slot_remote(id) && pad_style(id) == style) {
+        attributes = ATTR_CONNECTED | ATTR_WIRED;
+        PadState p;
+        u32 ph = rb_slot_phys(id);
+        if (!seq_player(ph) && !(bench_on() && !bench_pads()) && pad_get(ph, &p) && (pad_background() || gfx_window_focused())) {
+            buttons = p.buttons;
+            lx = p.lx; ly = p.ly; rx = p.rx; ry = p.ry;
+            lt = p.lt; rt = p.rt;
+        }
+        if ((int)ph == keyboard_slot() && !bench_on()) buttons |= keyboard_buttons(&lx, &ly, &rx, &ry);
+        if (menu_blocks_input() || input_gate) { buttons = 0; lx = ly = rx = ry = lt = rt = 0; }
+    }
+    st64(out, (u64)InterlockedIncrement64(&plugin_sampling));
+    st64(out + 8, buttons);
+    st32(out + 16, (u32)lx); st32(out + 20, (u32)ly);
+    st32(out + 24, (u32)rx); st32(out + 28, (u32)ry);
+    st32(out + 32, attributes);
+    if (style == STYLE_GC) { st32(out + 36, (u32)lt); st32(out + 40, (u32)rt); }
+}
+/* GetNpadStates(State *out, int count, const NpadIdType &id) -> int written: one state, the newest. */
+static void npad_states(Cpu *c, u32 style, u32 size) {
+    if ((i32)c->x[1] < 1 || !c->x[0] || !c->x[2]) { c->x[0] = 0; return; }
+    npad_peek(c->x[0], ld32(c->x[2]), style, size);
+    c->x[0] = 1;
+}
+/* signature: 16 words, sha256 71327273c0b3b43f */
+HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, STYLE_FULLKEY, 0x28); }
+/* signature: 16 words, sha256 71327273c0b3b43f */
+HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, 0, 0x28); }
+/* signature: 16 words, sha256 71327273c0b3b43f */
+HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, 0, 0x28); }
+/* signature: 16 words, sha256 71327273c0b3b43f */
+HLE_WRAP_EXPORT(_ZN2nn3hid13GetNpadStatesEPNS0_11NpadGcStateEiRKj) { if (!hid_plugin_on()) { orig(c); return; } npad_states(c, STYLE_GC, 0x30); }
