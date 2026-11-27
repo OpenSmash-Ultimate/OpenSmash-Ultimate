@@ -670,6 +670,38 @@ static class Program
         }
         finally { try { Directory.Delete(rroot, true); } catch { } }
 
+        // ---- a crash in a plugin (CrashBlame.cs): the report's first line (runtime/host.c crash_blame), the mod it came from
+        string broot = Path.Combine(Path.GetTempPath(), "os-core-blame-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(broot, "dump", "skyline"));
+        try
+        {
+            File.WriteAllText(Path.Combine(broot, "dump", "skyline", "plugins.json"),
+                "{\"A1\": {\"module\": \"smashline\", \"mod\": \"(standard) libsmashline_plugin.nro\", \"file\": \"x\"},\n" +
+                " \"B2\": {\"module\": \"made_up_moveset\", \"mod\": \"Made-up Moveset (1.0)\", \"file\": \"y\"},\n" +
+                " \"C3\": {\"module\": \"made_up_menu\", \"mod\": \"Made-up Menu\", \"file\": \"z\"}}");
+            string own = "\n*** host exception 0xc0000005 during nnMain: reading address 0 - in plugin made_up_moveset (made_up_moveset+0x12e04)\nmemory at the address:\n";
+            string called = "\n*** host exception 0xc0000005 during nnMain: reading address 0 - in code called from plugin made_up_menu_ (made_up_menu_+0x5b8)\n";
+            string std = "\n*** host exception 0xc0000005 during nnMain: reading address 0 - in plugin smashline (smashline+0x3faf0)\n";
+            string none = "\n*** host exception 0xc0000005 during nnMain: reading address 0x20\nguest backtrace (innermost first):\n  smashline+0x147a8\n";
+            Check(CrashBlame.Plugin(own) is { Module: "made_up_moveset", Own: true }, "crash blame: the plugin of the first line");
+            Check(CrashBlame.Plugin(called) is { Module: "made_up_menu_", Own: false }, "crash blame: code called from a plugin");
+            Check(CrashBlame.Plugin(none) == null && CrashBlame.Plugin("") == null && CrashBlame.Plugin("Why: in plugin x (x+0x1)") == null, "crash blame: none named, a plugin further down not taken");
+            Check(CrashBlame.ModOf(broot, "made_up_moveset") is { Mod: "Made-up Moveset (1.0)", Standard: false }, "crash blame: the mod of a plugin");
+            Check(CrashBlame.ModOf(broot, "made_up_menu_") is { Mod: "Made-up Menu", Standard: false }, "crash blame: a plugin's second copy (a trailing _)");
+            Check(CrashBlame.ModOf(broot, "smashline") is { Standard: true } && CrashBlame.ModOf(broot, "unknown") == null && CrashBlame.ModOf(rroot + "-gone", "smashline") == null, "crash blame: a standard plugin, an unknown one, no record");
+            var h = CrashBlame.HintFor(broot, own);
+            Check(h.Mod == "Made-up Moveset (1.0)" && h.Text.Contains("\"Made-up Moveset (1.0)\"") && h.Text.Contains("turn that mod off"), "crash blame: the suggestion names the mod: " + h.Text);
+            h = CrashBlame.HintFor(broot, std);
+            Check(h.Mod == null && h.Text != null && !h.Text.Contains("turn that mod off"), "crash blame: a standard plugin - no mod to turn off");
+            Check(CrashBlame.HintFor(broot, none) == (null, null), "crash blame: nothing named, nothing said");
+            Check(CrashBlame.HintOn(null) && CrashBlame.HintOn("1") && !CrashBlame.HintOn("0") && !CrashBlame.HintOn("Off"), "crash blame: OPENSMASH_CRASH_MOD_HINT");
+            Directory.CreateDirectory(Path.Combine(broot, "reports"));
+            File.WriteAllText(Path.Combine(broot, "reports", "crash_20990101_000000.txt"), own);
+            Check(CrashBlame.Hint(broot, DateTime.UtcNow.AddMinutes(-1)).Mod == "Made-up Moveset (1.0)", "crash blame: the newest crash report after a game");
+            Check(CrashBlame.Hint(broot, DateTime.UtcNow.AddMinutes(1)).Text == null, "crash blame: a report from before the game is not taken");
+        }
+        finally { try { Directory.Delete(broot, true); } catch { } }
+
         // ---- the session's performance summary
         string perf = "{\"schema\":1,\"clean_exit\":true,\"session_s\":300,\"frames\":18000,\"ft_p50\":16.62,\"ft_p99\":21.5,\"stutters\":3," +
                       "\"hist\":{\"<8\":0,\"<12\":1,\">=100\":2},\"rb_rollbacks\":120,\"path\":\"C:/Users/someone\",\"name\":\"someone\"}";
