@@ -1,6 +1,7 @@
-/* The freeze watchdog: when no frame has been presented for 5 seconds, a report of what every
+/* The freeze watchdog: when no frame has been presented for 15 seconds, a report of what every
  * thread is doing goes to reports\freeze_<time>.txt (and one line to the log), with a minidump;
- * again at 30 s and 120 s of the same freeze. It starts with the first presented frame, and
+ * again at 30 s and 120 s of the same freeze. A shorter stall (5 s or more) is one log line with
+ * its length (freeze_schedule.h; SSBU_FREEZE_CONFIRM=0: the first report after 5 s, as before). It starts with the first presented frame, and
  * waits while the software keyboard's dialog is open or a debugger is attached.
  *
  * A report: how long, the owners of the locks presenting depends on (the renderer's, the
@@ -16,6 +17,7 @@
 #include <windows.h>
 
 #include "debug_profile.h"
+#include "freeze_schedule.h"
 
 typedef unsigned long long U64;
 
@@ -65,17 +67,25 @@ static void write_report(U64 since, int first) {
 static DWORD WINAPI watchdog(void *unused) {
     (void)unused;
     SetThreadDescription(GetCurrentThread(), L"freeze watchdog");
-    static const U64 AT[] = {5000, 30000, 120000};
-    int reports = 0;
+    FreezeSchedule s;   /* (freeze_schedule.h: SSBU_FREEZE_CONFIRM, the first report after 15 s; 0: after 5 s, as before) */
+    freeze_schedule_init(&s, getenv("SSBU_FREEZE_CONFIRM"));
+    if (!s.old) fprintf(stderr, "[watchdog] a freeze report after %.0f s with no frame (SSBU_FREEZE_CONFIRM; 0: after 5 s, as before)\n", s.at[0] / 1000.0);
+    U64 stalls = 0;
     for (;;) {
         Sleep(500);
-        U64 now = GetTickCount64(), since = now - last_present;
+        U64 now = GetTickCount64(), len = 0;
         if (paused || IsDebuggerPresent()) continue;
-        if (since < 5000) {
-            if (reports) { fprintf(stderr, "[watchdog] frames are presented again\n"); reports = 0; }
-            continue;
+        switch (freeze_schedule_tick(&s, now, last_present, &len)) {
+        case FREEZE_REPORT: write_report(len, s.reports == 1); break;
+        case FREEZE_RESUMED:
+            if (s.old) fprintf(stderr, "[watchdog] frames are presented again\n");
+            else fprintf(stderr, "[watchdog] frames are presented again (after %.1f s without)\n", len / 1000.0);
+            break;
+        case FREEZE_STALL_ENDED:
+            fprintf(stderr, "[watchdog] a stall: no frame presented for %.1f s, then frames again - no report (%llu so far; SSBU_FREEZE_CONFIRM: "
+                            "a report after %.0f s)\n", len / 1000.0, ++stalls, s.at[0] / 1000.0);
+            break;
         }
-        if (reports < 3 && since >= AT[reports]) write_report(since, reports++ == 0);
     }
 }
 

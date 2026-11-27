@@ -533,7 +533,7 @@ back.
 | A black window, or `cannot create the window` / DXVK errors in the log | Run `vulkaninfo --summary`. If it lists no device, install `mesa-vulkan-drivers`. |
 | No sound | SDL uses PulseAudio or PipeWire. Check the log for `[audio]` lines. |
 | A crash | It writes `reports/crash_<date>_<time>.txt`: the guest function and host frames (`*** host exception`), also at the end of the log. Send it with `build/play.log`. When the port stops the game itself (something it can't do yet), it writes `reports/stopped_*.txt`. |
-| A freeze (no new picture for 5 seconds) | It writes `reports/freeze_*.txt`, again at 30 and 120 seconds: every thread's stack and who holds the renderer's locks. `SSBU_WATCHDOG=0` turns that off. Windows also writes minidumps; Linux doesn't, so a core dump, if your system keeps them, is the closest thing. |
+| A freeze (no new picture for 15 seconds; `SSBU_FREEZE_CONFIRM=0`: 5 seconds, as before) | It writes `reports/freeze_*.txt`, again at 30 and 120 seconds: every thread's stack and who holds the renderer's locks. `SSBU_WATCHDOG=0` turns that off. Windows also writes minidumps; Linux doesn't, so a core dump, if your system keeps them, is the closest thing. |
 | Stutter | `SSBU_HITCH=40 ./run.sh` logs every frame over 40 ms with what the game's main, vsync and renderer threads spent it on (`[hitch]` lines in the log). |
 | Suspected trouble with write tracking | `SSBU_WRITE_WATCH=protect` makes the renderer track CPU writes with page protection instead of the kernel's write tracking (`userfaultfd` + `PAGEMAP_SCAN`, Linux 6.7 and later). Use it only to rule that out. The log's first lines say which one is in use. |
 
