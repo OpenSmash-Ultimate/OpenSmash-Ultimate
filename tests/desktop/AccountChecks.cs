@@ -165,7 +165,10 @@ static class AccountChecks
         Check(values.GetValueOrDefault("region") == "na-east", "Server region read from config/server_region.txt");
         var tabs = (Array)t.GetField("_settingsTabs", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(s)!;
         var online = tabs.Cast<object>().First(x => (string)x.GetType().GetField("Name")!.GetValue(x)! == "Online");
-        Check(((string[])online.GetType().GetField("SettingKeys")!.GetValue(online)!).Last() == "region", "the Online tab has the Server region row");
+        // (after the original rows; v0.5.4's Ping in online fights, net_ping, comes after it)
+        var onlineKeys = (string[])online.GetType().GetField("SettingKeys")!.GetValue(online)!;
+        Check(onlineKeys.Contains("region") && Array.IndexOf(onlineKeys, "region") > Array.IndexOf(onlineKeys, "direct"), "the Online tab has the Server region row");
+        Check(onlineKeys.Last() == "net_ping", "the Online tab has the Ping in online fights row");
         values["region"] = "eu";
         ((HashSet<string>)t.GetField("_changedSettings", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(s)!).Add("region");
         t.GetMethod("WriteSettingsFiles", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(s, null);

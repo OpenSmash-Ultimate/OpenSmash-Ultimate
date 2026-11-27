@@ -80,7 +80,7 @@ void InitializeSettings() {
                 new SettingTab { Name = "Display", SettingKeys = new[] { "window", "window_size", "pacing", "preload_shaders", "ui_language" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
-                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct", "region" } },   // ("region": v0.5.0, after the original rows)
+                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "code", "server", "direct", "region", "net_ping" } },   // ("region": v0.5.0, after the original rows; "net_ping": v0.5.4)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "pads", "remap" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
@@ -116,6 +116,8 @@ void InitializeSettings() {
                 new Setting { Key = "direct", Label = "Direct connections", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
                 // (v0.5.0: the official lobbies, one a region - OpenSmash.Core.ServerRegion; config/server_region.txt, the game's menu writes it too)
                 new Setting { Key = "region", Label = "Server region", Values = SettingDefaults.Choices["region"], Labels = SettingDefaults.RegionLabels },
+                // (display.ini net_ping, SSBU_NET_PING: each other player's ping and the input delay in an online rollback fight; as OpenSmash.Launcher/LauncherForm.cs)
+                new Setting { Key = "net_ping", Label = "Ping in online fights", Values = new[] { "1", "0" }, Labels = new[] { "Shown, with the input delay", "Hidden" } },
                 new Setting { Key = "keyboard_player", Label = "Keyboard plays as", Values = new[] { "1", "2", "3", "4", "5", "6", "7", "8", "0" }, Labels = new[] { "Player 1", "Player 2", "Player 3", "Player 4", "Player 5", "Player 6", "Player 7", "Player 8", "Nobody (no keyboard)" } },
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
                 new Setting { Key = "remap", Label = "Remap a controller", Action = "settings:remap" },
@@ -289,7 +291,7 @@ void InitializeSettings() {
             string D(string key) => IniValue(display, "", key) ?? SettingDefaults.Of(key);
             _iniValues["ui_language"] = D("ui_language");
             UiLocale.Select(_iniValues["ui_language"]);
-            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "hide_cursor", "overlay", "volume" })
+            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "hide_cursor", "overlay", "net_ping", "volume" })
                 _iniValues[key] = D(key);
             _iniValues["window_size"] = _iniValues["width"] + "x" + _iniValues["height"];
             _iniValues["renderer"] = SettingDefaults.Renderer(D("renderer"));
@@ -361,7 +363,7 @@ void InitializeSettings() {
             // Only what was changed here since the files were read: the game's own settings menu (Esc) writes these
             // files too, while the launcher waits for the game to close.
             string display = Project.ConfigFile("display.ini"), pads = Project.ConfigFile("controllers.ini");
-            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "renderer", "hide_cursor", "overlay", "volume" })
+            foreach (string key in new[] { "window", "width", "height", "pacing", "render_scale", "gpu", "renderer", "hide_cursor", "overlay", "net_ping", "volume" })
                 if (_changedSettings.Contains(key)) SetIni(display, "", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));
             foreach (string key in new[] { "keyboard_player", "background" })
                 if (_changedSettings.Contains(key)) SetIni(pads, "general", key, _iniValues.GetValueOrDefault(key, SettingDefaults.Of(key)));

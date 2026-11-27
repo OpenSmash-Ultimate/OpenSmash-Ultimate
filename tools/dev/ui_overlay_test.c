@@ -8,6 +8,14 @@ int menu_blocks_input(void) { return 0; }
 void menu_draw(float w, float h) { (void)w; (void)h; }
 int game_fight_on(void) { return 0; }
 int net_peer_quality(NetPeerQ *out, int max) { (void)out; (void)max; return 0; }
+static int ping_on = 1, ping_fight;   /* (the ping overlay: display.ini net_ping, an online rollback fight of 2 players) */
+int display_net_ping(void) { return ping_on; }
+int rb_net_ping_view(NetPingView *v) {
+    memset(v, 0, sizeof *v);
+    if (!ping_fight) return 0;
+    v->players = 2; v->local = 0; v->ms[0] = -2; v->ms[1] = 48; v->delay = 2; v->delay_how = NET_DELAY_AUTO;
+    return 2;
+}
 
 int main(void) {
     unsigned w, h;
@@ -41,6 +49,21 @@ int main(void) {
     /* narrow Unicode samples one cell, less half a texel in from each side (gpu_overlay.c: the linear filter never reads the next cell) */
     assert(fabsf((verts[19].u - verts[18].u) - (1.0f / COLS - 1.0f / ATLAS_W)) < 1e-6f);
     assert(verts[30].x == 40);
+    /* the ping in an online rollback fight: by player 2's stock icons at 1920x1080 (right of x 380, above y 1060), none
+     * outside one, and none with the switch off (nothing asked: the view is not even read) */
+    const OverlayVertex *ov;
+    assert(overlay_quads(1920, 1080, 0, NULL, &ov) == 0);
+    ping_fight = 1; Sleep(520);   /* (the view is read twice a second) */
+    unsigned nq = overlay_quads(1920, 1080, 0, NULL, &ov);
+    assert(nq > 0 && nq % 6 == 0);
+    float lo = 1e9f, hi = 0, top = 1e9f, bottom = 0;
+    for (unsigned i = 0; i < nq; i++) {
+        if (ov[i].x < lo) lo = ov[i].x; if (ov[i].x > hi) hi = ov[i].x;
+        if (ov[i].y < top) top = ov[i].y; if (ov[i].y > bottom) bottom = ov[i].y;
+    }
+    assert(lo > 1000 && hi < 1210 && top > 1000 && bottom < 1080);
+    ping_on = 0;
+    assert(overlay_quads(1920, 1080, 0, NULL, &ov) == 0);
     puts("Windows UTF-8 overlay atlas and quads passed");
     return 0;
 }

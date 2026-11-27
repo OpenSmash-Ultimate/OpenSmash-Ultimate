@@ -241,6 +241,7 @@ size_t rbn_hello_build(uint8_t *b, size_t cap, const RbnHello *h) {
     b[4] = (uint8_t)(h->input_delay < 0 ? 0 : h->input_delay > 255 ? 255 : h->input_delay);
     b[5] = (uint8_t)(h->players < 0 ? 0 : h->players > RBN_PLAYERS ? RBN_PLAYERS : h->players);
     b[6] = (uint8_t)(h->assign < 0 ? 0 : h->assign > RBN_PLAYERS ? 0 : h->assign);
+    b[7] = (uint8_t)(h->delay_how == 1 || h->delay_how == 2 ? h->delay_how : 0);
     put64(b + 8, h->seed); put64(b + 16, h->t); put64(b + 24, h->echo); put32(b + 32, h->hold);
     return RBN_HELLO_BYTES;
 }
@@ -282,6 +283,7 @@ int rbn_hello_parse(const uint8_t *b, size_t len, RbnHello *h) {
     h->player = b[1] == 0xFF ? -1 : b[1]; h->version = b[2]; h->agreed = b[3]; h->seed = get64(b + 8);
     if (len == RBN_HELLO_BYTES) {
         h->input_delay = b[4]; h->players = b[5]; h->assign = b[6] <= RBN_PLAYERS ? b[6] : 0;
+        h->delay_how = b[7] == 1 || b[7] == 2 ? b[7] : 0;
         h->t = get64(b + 16); h->echo = get64(b + 24); h->hold = get32(b + 32);
     }
     return 1;

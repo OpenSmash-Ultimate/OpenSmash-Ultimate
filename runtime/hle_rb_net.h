@@ -77,7 +77,7 @@ typedef struct RbnMsg {
 size_t rbn_build(uint8_t *buf, size_t cap, const RbnMsg *m);    /* bytes written, 0 when it doesn't fit */
 int rbn_parse(const uint8_t *buf, size_t len, RbnMsg *m);       /* 1: a valid message */
 
-/* HELLO, the handshake before a match: type 2 | player u8 | version u8 | agreed u8 | delay u8 | players u8 | assign u8 | 0 u8 |
+/* HELLO, the handshake before a match: type 2 | player u8 | version u8 | agreed u8 | delay u8 | players u8 | assign u8 | how u8 |
  * seed u64 | t u64 | echo u64 | hold u32 | 0 u32 (40 bytes).
  * Player 1's game proposes the match seed and the input delay; player 2's takes both and answers with the
  * seed (agreed 1); a seed of 0 is "here, nothing yet". M6 (version 2), the round trip: t is the sender's
@@ -96,7 +96,9 @@ enum { RBN_MSG_HELLO = 2 };
  * Host/Join, version 6: a joining game has no number yet: player -1 (0xFF on the wire), and its seed field carries a
  * random join id instead, so the host tells two joiners from one address apart and knows one that comes back. The
  * host gives each joiner the lowest free player and says which in every hello to it: assign, byte 6, its player + 1.) */
-typedef struct RbnHello { int player, version, agreed, input_delay; uint64_t seed, t, echo; uint32_t hold; int players, assign; } RbnHello;
+/* (the ping overlay, net_ping.h) how, byte 7: how player 1 chose the input delay it sends, NET_DELAY_* - 1 from the round
+ * trip, 2 set by hand, 0 not said (an older game, which sends 0 there and reads nothing from it). Shown only. */
+typedef struct RbnHello { int player, version, agreed, input_delay; uint64_t seed, t, echo; uint32_t hold; int players, assign, delay_how; } RbnHello;
 size_t rbn_hello_build(uint8_t *buf, size_t cap, const RbnHello *h);
 /* The input delay for a round trip (ms), when it is left to the handshake (RB_DELAY=auto): 1 up to 50 ms,
  * one more for each 50 ms, at most 5. The rest of the trip the rollback covers (RBN_MAX_BACK frames). */

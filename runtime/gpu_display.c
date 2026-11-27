@@ -158,6 +158,9 @@ static const char DEFAULT_INI[] =
     "ui_language = auto\n"
     "; overlay_scale = 0.25-2: the overlay's size (0.5: half as big, out of the way of the game).\n"
     "overlay_scale = 1\n"
+    "; net_ping = 1: in an online rollback fight, each other player's ping and the input delay in use, by the HUD\n"
+    ";   (0: hidden; SSBU_NET_PING=0/1 wins over it).\n"
+    "net_ping = 1\n"
     "\n"
     "; render_scale = 1 | auto | a number from 0.5 to 4\n"
     ";   The game draws its pictures at 1920x1080. render_scale draws them this many times as wide and\n"
@@ -279,6 +282,7 @@ static void parse_renderer(const char *v, const char *where) {
 }
 
 static float overlay_scale = 1;   /* overlay_scale = 0.25-2 */
+static int net_ping = 1;          /* net_ping = 0/1: the ping overlay (net_ping.h) */
 static void parse_overlay_scale(const char *v) {
     char *end;
     double x = strtod(v, &end);
@@ -328,6 +332,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "hide_cursor")) cfg.hide_cursor = atoi(value) != 0;
         else if (!_stricmp(key, "overlay")) cfg.overlay = atoi(value) != 0;
         else if (!_stricmp(key, "overlay_scale")) parse_overlay_scale(value);
+        else if (!_stricmp(key, "net_ping")) net_ping = atoi(value) != 0;
         else if (!_stricmp(key, "gpu")) snprintf(cfg.gpu, sizeof cfg.gpu, "%s", value);
         else if (!_stricmp(key, "render_scale")) parse_render_scale(value);
         else if (!_stricmp(key, "renderer")) { parse_renderer(value, path); snprintf(renderer_line, sizeof renderer_line, "%s", value); }
@@ -539,6 +544,11 @@ static char saved_gpu[64];   /* (and the graphics card: the menu shows its choic
 void display_set_gpu(const char *gpu) { snprintf(saved_gpu, sizeof saved_gpu, "%s", gpu && *gpu ? gpu : "auto"); }
 int display_overlay(void) { load(); return cfg.overlay; }
 float display_overlay_scale(void) { load(); return overlay_scale; }
+int display_net_ping(void) {   /* (SSBU_NET_PING=0/1 wins over display.ini's net_ping; read once) */
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_NET_PING"); load(); on = e && *e ? e[0] != '0' : net_ping; }
+    return on;
+}
 
 /* ---- the settings menu's changes ------------------------------------------------------- */
 static volatile LONG asked_mode = -1, asked_latency;

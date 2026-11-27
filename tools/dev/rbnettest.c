@@ -166,6 +166,19 @@ int main(int argc, char **argv) {
         if (n != RBN_HELLO_BYTES || !rbn_hello_parse(b, n, &g) || g.player != 1 || g.version != RBN_VERSION || !g.agreed || g.seed != h.seed ||
             g.input_delay != 3 || g.t != h.t || g.echo != h.echo || g.hold != h.hold ||
             rbn_hello_parse(b, n - 1, &g)) { fprintf(stderr, "FAIL: HELLO round trip\n"); return 1; }
+        /* (the ping overlay: how player 1 chose its delay, byte 7; 0 - an older game's - and anything else read as not said) */
+        if (g.delay_how != 0) { fprintf(stderr, "FAIL: a HELLO without a delay's how\n"); return 1; }
+        for (int how = 0; how <= 3; how++) {
+            int want = how <= 2 ? how : 0;
+            h.delay_how = how;
+            n = rbn_hello_build(b, sizeof b, &h);
+            if (n != RBN_HELLO_BYTES || b[7] != want || !rbn_hello_parse(b, n, &g) || g.delay_how != want || g.input_delay != 3) {
+                fprintf(stderr, "FAIL: HELLO delay how %d\n", how); return 1;
+            }
+            b[7] = (uint8_t)(how + 5);
+            if (!rbn_hello_parse(b, n, &g) || g.delay_how != 0) { fprintf(stderr, "FAIL: a HELLO with byte 7 = %d\n", how + 5); return 1; }
+        }
+        h.delay_how = 0;
         /* (Host/Join: a joiner with no number yet, its join id in the seed; the host's answer saying its number) */
         RbnHello j = {-1, RBN_VERSION, 0, 0, 0xfeedfacecafebeefull}, k;
         n = rbn_hello_build(b, sizeof b, &j);
