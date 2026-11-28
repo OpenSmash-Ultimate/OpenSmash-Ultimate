@@ -7,6 +7,8 @@
 // play.log: since 2026-11-27 at most 256 KB of it, its first 32 KB (the GPU, the settings) and its end, where the game
 // stopped (it was its last 1 MB: ~750 KB a report on average, 80% of the bucket, which filled ~110 MB a day of the free
 // plan's 1 GB). OPENSMASH_CRASH_LOG_KB=<KB> (64..1024, default 256); 0 or off = its last 1 MB, as before.
+// v0.5.5: a game that crashed without writing a report (its exit code says so: ExitCodeReport.cs) gets one made from
+// its exit code and the end of its log, sent the same way. OPENSMASH_EXIT_REPORT=0: not, as before.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -126,24 +128,42 @@ namespace OpenSmash.Core
             return first.Length > 300 ? first.Substring(0, 300) : first;
         }
 
-        /// <summary>after a game: true when a report was found and sent. Every outcome goes to log.</summary>
-        public static async Task<bool> SendIfAnyAsync(Account account, string root, DateTime startedUtc, bool enabled, string commit, Action<string> log)
+        /// <summary>what is sent after a game: the newest report it wrote (kind from its name, its file); else, with
+        /// exitCode an abnormal one (ExitCodeReport.Abnormal) and OPENSMASH_EXIT_REPORT on, a crash report made from
+        /// the exit code (file null); else null. windows/mac: what kind of exit code it is.</summary>
+        public static (string Kind, string File, int? ExitCode)? Pending(string root, DateTime startedUtc, int? exitCode, bool windows, bool mac, string exitVariable)
         {
             string file = NewReport(root, startedUtc);
-            if (file == null) return false;
+            if (file != null) return (Path.GetFileName(file).Split('_')[0].ToLowerInvariant(), file, null);
+            if (exitCode is int code && ExitCodeReport.On(exitVariable) && ExitCodeReport.Abnormal(code, windows, mac)) return ("crash", null, code);
+            return null;
+        }
+
+        /// <summary>after a game: true when a report was found and sent. Every outcome goes to log. exitCode: the game's,
+        /// when known (a report is made from it when the game crashed without writing one: ExitCodeReport); logPath: its
+        /// log (default build\play.log).</summary>
+        public static async Task<bool> SendIfAnyAsync(Account account, string root, DateTime startedUtc, bool enabled, string commit, Action<string> log,
+                                                      int? exitCode = null, string logPath = null)
+        {
+            bool windows = OperatingSystem.IsWindows(), mac = OperatingSystem.IsMacOS();
+            var pending = Pending(root, startedUtc, exitCode, windows, mac, Environment.GetEnvironmentVariable(ExitCodeReport.Variable));
+            if (pending == null) return false;
+            string file = pending.Value.File;
+            string playLog = logPath ?? Path.Combine(root, "build", "play.log");
+            if (file == null) log("crash report: the game ended with " + ExitCodeReport.Describe(pending.Value.ExitCode.Value, windows, mac) + " and wrote none");
             if (!enabled) { log("crash report: off in the settings"); return false; }
-            if (!account.SignedIn) { log("crash report: not signed in, not sent"); return false; }
+            if (account == null || !account.SignedIn) { log("crash report: not signed in, not sent"); return false; }
             try
             {
-                string kind = Path.GetFileName(file).Split('_')[0].ToLowerInvariant();
-                string report = Clean(HeadAndTail(file, MaxReport, ReportHead), root);
-                string playLog = Path.Combine(root, "build", "play.log");
+                string kind = pending.Value.Kind;
+                string report = Clean(file != null ? HeadAndTail(file, MaxReport, ReportHead)
+                                                   : ExitCodeReport.Text(pending.Value.ExitCode.Value, windows, mac, playLog), root);
                 string logText = File.Exists(playLog) ? Clean(LogPart(playLog, ParseLogLimit(Environment.GetEnvironmentVariable(LogVariable))), root) : null;
                 string first = Title(report, kind);
                 var gpu = logText == null ? null : Regex.Match(logText, @"(?:Vulkan|D3D11|device)[^\r\n]{0,20}:\s*([^\r\n(]{4,80})");
                 string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
                 string folder = "r/" + account.Me.Id + "/" + stamp + "-os";   // (the bucket's policy: r/<own id>/...; the product is a column)
-                string reportPath = folder + "-" + kind + ".txt", logPath = logText == null ? null : folder + "-play.log";
+                string reportPath = folder + "-" + kind + ".txt", logName = logText == null ? null : folder + "-play.log";
                 if (Environment.GetEnvironmentVariable("OPENSMASH_CRASH_TEST") == "1")
                 {   // (test: what would be sent, beside the log; nothing goes out)
                     File.WriteAllText(Path.Combine(root, "build", "crash_test_report.txt"), report);
@@ -152,13 +172,13 @@ namespace OpenSmash.Core
                     return false;
                 }
                 await PutAsync(account, reportPath, report);
-                if (logPath != null) await PutAsync(account, logPath, logText);
+                if (logName != null) await PutAsync(account, logName, logText);
                 var args = new Dictionary<string, object>
                 {
                     ["p_product"] = "opensmash", ["p_version"] = Updater.Current.ToString(), ["p_commit"] = commit,
                     ["p_exception"] = kind + ": " + first, ["p_stack"] = null,
                     ["p_gpu"] = gpu != null && gpu.Success ? gpu.Groups[1].Value.Trim() : null,
-                    ["p_windows"] = Environment.OSVersion.VersionString, ["p_log_path"] = logPath, ["p_crash_path"] = reportPath,
+                    ["p_windows"] = Environment.OSVersion.VersionString, ["p_log_path"] = logName, ["p_crash_path"] = reportPath,
                 };
                 await account.RestAsync("POST", "/rest/v1/rpc/crash_report_add", JsonSerializer.Serialize(args));
                 log("crash report sent: " + first);

@@ -270,12 +270,15 @@ public sealed partial class MainWindow : Window
             var ticket=await AccountPassForGame(p.Root);
             PresenceStop();   // (the game's own Rich Presence takes over; MainWindow.Discord.cs)
             int exit;
+            DateTime started=DateTime.UtcNow;
             try
             {
                 exit=await GameLaunch.Monitor(Commands.Play(p,true) with {Environment=ticket},log,()=>{Surface.StartingGame=false;AccountGameStarted();Hide();},
                     nativeLog:p.Platform==DesktopPlatform.MacOS?p.PathIn("build","play.log"):null);
             }
             finally{AccountGameEnded(p.Root);}
+            // (v0.5.5: the report the game wrote, or one made from its exit code when it crashed without one; MainWindow.Account.cs)
+            _=AccountCrashReport(p.Root,started,exit,p.Platform==DesktopPlatform.MacOS?p.PathIn("build","play.log"):log);
             RestoreAfterGame(exit,log,p.PathIn("build"));
         }
         catch(Exception error)
