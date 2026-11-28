@@ -441,3 +441,80 @@ class ArcWorkspace(unittest.TestCase):
             self.assertEqual((d / 'workspace').read_text(), 'HDR')
             self.assertTrue(aw.activate(t, False))
             self.assertEqual((d / 'workspace').read_text(), 'Default')
+
+
+class HdrUpdate(unittest.TestCase):
+    """hdr.check / hdr.update: a newer prerelease on HDR's releases page, its upgrade package (to-beta.zip) over the
+    release before it, the whole package otherwise. The page and the downloads are made up."""
+    def setUp(self):
+        import zipfile
+        self.zipfile = zipfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.tree = mods.Tree(str(self.root))
+        for m in hdr.MODS:
+            (self.root / 'mods' / m / 'fighter').mkdir(parents=True)
+            (self.root / 'mods' / m / 'fighter' / 'x.bin').write_bytes(b'old')
+        (self.root / 'mods' / 'hdr' / 'fighter' / 'gone.bin').write_bytes(b'old')
+        keep = self.root / 'dump' / 'hdr' / 'plugins'
+        keep.mkdir(parents=True)
+        for p in hdr.PLUGINS:
+            (keep / p).write_bytes(b'NRO')
+        (self.root / 'dump' / 'hdr' / 'installed.json').write_text(json.dumps({'version': 'v0.50.10-prerelease'}))
+        self.zips = {}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def delta(self, name='to-beta.zip'):
+        path = self.root / name
+        with self.zipfile.ZipFile(path, 'w') as z:
+            z.writestr('ultimate/mods/hdr/fighter/x.bin', b'new')
+            z.writestr('ultimate/mods/hdr/ui/hdr_version.txt', 'v0.50.11-prerelease\n')
+            z.writestr('ultimate/mods/hdr-stages/fighter/y.bin', b'added')
+            z.writestr(hdr.PLUGIN_DIR + 'libstage_alts.nro', b'NRO2')
+            z.writestr(hdr.PLUGIN_DIR + 'hdr-launcher.nro', b'NOT US')
+            z.writestr('deletions.json', json.dumps(['sd:/ultimate/mods/hdr/fighter/gone.bin', 'sd:/atmosphere/../../evil']))
+        return path
+
+    def rels(self, assets=('to-beta.zip', 'switch-package.zip')):
+        mk = lambda n: {'url': 'https://example/' + n, 'size': 0, 'sha256': None}
+        return [{'tag': 'v0.50.11-prerelease', 'assets': {n: mk(n) for n in assets}},
+                {'tag': 'v0.50.10-prerelease', 'assets': {}}]
+
+    def test_check(self):
+        c = hdr.check(self.tree, self.rels())
+        self.assertTrue(c['newer'])
+        self.assertTrue(c['delta'])
+        self.assertEqual(c['asset'], 'to-beta.zip')
+        (self.root / 'dump' / 'hdr' / 'installed.json').write_text(json.dumps({'version': 'v0.50.9-prerelease'}))
+        c = hdr.check(self.tree, self.rels())
+        self.assertFalse(c['delta'])   # (two releases behind: the whole package)
+        self.assertEqual(c['asset'], 'switch-package.zip')
+        (self.root / 'dump' / 'hdr' / 'installed.json').write_text(json.dumps({'version': 'v0.50.11-prerelease'}))
+        self.assertFalse(hdr.check(self.tree, self.rels())['newer'])
+
+    def test_update_with_the_upgrade_package(self):
+        src = self.delta()
+
+        def fetch(info, target, progress=None, log=None):
+            shutil.copyfile(src, target)
+        with mock.patch.object(hdr, 'fetch_asset', fetch), mock.patch.object(hdr, 'bake_motion'):
+            self.assertTrue(hdr.update(self.tree, None, lambda s: None, self.rels()))
+        self.assertEqual((self.root / 'mods' / 'hdr' / 'fighter' / 'x.bin').read_bytes(), b'new')
+        self.assertEqual((self.root / 'mods' / 'hdr-assets' / 'fighter' / 'x.bin').read_bytes(), b'old')   # (unchanged)
+        self.assertTrue((self.root / 'mods' / 'hdr-stages' / 'fighter' / 'y.bin').is_file())
+        self.assertFalse((self.root / 'mods' / 'hdr' / 'fighter' / 'gone.bin').exists())
+        self.assertEqual((self.root / 'dump' / 'hdr' / 'plugins' / 'libstage_alts.nro').read_bytes(), b'NRO2')
+        self.assertEqual((self.root / 'skyline' / 'plugins' / 'libstage_alts.nro').read_bytes(), b'NRO2')
+        self.assertFalse((self.root / 'skyline' / 'plugins' / 'hdr-launcher.nro').exists())
+        self.assertEqual(hdr.installed(self.tree), 'v0.50.11-prerelease')
+        self.assertFalse(list((self.root / 'dump' / 'hdr').glob('update-*.zip')))
+
+    def test_a_zip_without_hdr_s_files_changes_nothing(self):
+        bad = self.root / 'bad.zip'
+        with self.zipfile.ZipFile(bad, 'w') as z:
+            z.writestr('readme.txt', 'hi')
+        with self.assertRaises(hdr.Error):
+            hdr.apply_delta(self.tree, str(bad), 'v0.50.11-prerelease', lambda s: None)
+        self.assertEqual(hdr.installed(self.tree), 'v0.50.10-prerelease')

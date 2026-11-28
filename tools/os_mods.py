@@ -15,6 +15,8 @@
     os_mods.py updates                 installed GameBanana mods with a newer file (RESULT: updates)
     os_mods.py hdr-install <zip|folder>   HewDraw Remix from its switch-package, already downloaded (tools/hdr.py)
     os_mods.py hdr-download            HewDraw Remix's checked release, downloaded from GitHub and installed
+    os_mods.py hdr-check               a newer HDR prerelease than the one installed (RESULT: installed, latest, newer, size)
+    os_mods.py hdr-update              install it (RESULT: updated, version), then apply
     os_mods.py hdr-only on|off         the launcher's HDR mode: ARCropolis' HDR workspace (HDR's folders alone) made
                                        the active one, or the one before it again (tools/arc_workspace.py); the
                                        switches and plugins stay as they are (RESULT: changed: applied the first time)
@@ -370,6 +372,27 @@ def main(argv):
                     log(f"percent {pct}")
             st = hdr.download(tree, progress, log)
             return result(True, version=st["installed"])
+        if cmd == "hdr-check":   # (the launcher, HDR mode's start: a newer HDR to offer)
+            try:
+                return result(True, **hdr.check(tree))
+            except hdr.Error as e:   # (offline, say: nothing to offer, the game starts)
+                return result(True, newer=False, reason=str(e))
+        if cmd == "hdr-update":
+            last = [-1]
+
+            def progress(done, total=1):
+                pct = int(done * 100 / total) if total else 0
+                if pct != last[0]:
+                    last[0] = pct
+                    log(f"percent {pct}")
+            updated = hdr.update(tree, progress, log)
+            if updated:
+                normalize_picks(tree)
+                mods.apply(tree, log)
+                if mods.hdr_mode(tree.load()):
+                    import arc_workspace
+                    arc_workspace.activate(tree.root, True, log)
+            return result(True, updated=updated, version=hdr.installed(tree))
         if cmd == "hdr-only":
             if len(argv) < 3 or argv[2] not in ("on", "off"):
                 raise mods.Error("hdr-only on|off")

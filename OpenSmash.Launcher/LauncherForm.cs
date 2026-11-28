@@ -4246,6 +4246,7 @@ namespace OpenSmash.Launcher
                 return;
             }
             if (!await SwitchHdrMode()) return;   // (HDR only, or back from it: before the plugin check, which reads what's on)
+            await OfferHdrUpdate();   // (HDR mode: a newer HDR prerelease offered, and installed before the plugin check)
             string unbuilt = await UnbuiltPluginChoice();
             if (unbuilt == "cancel") return;
             if (unbuilt == "build")
@@ -4368,6 +4369,53 @@ namespace OpenSmash.Launcher
             {
                 UiLocale.Message(ex.Message, "OpenSmash");
                 return false;
+            }
+            finally { ClearLoad(); }
+        }
+
+        // HDR mode's start: HDR's releases page asked for a newer prerelease (tools/hdr.py check; offline or the page
+        // not answering: nothing, the game starts). Yes: its upgrade package (to-beta.zip) over the release before it, or
+        // the whole package, then applied (os_mods.py hdr-update).
+        async Task OfferHdrUpdate()
+        {
+            if (_launchMode != "hdr" || !HdrInstalled) return;
+            JsonElement? found = null;
+            try
+            {
+                SetLoad("CHECKING FOR HDR UPDATES", -1);
+                await Task.Run(() =>
+                {
+                    RunPython(new[] { Path.Combine(_repo, "tools", "os_mods.py"), "hdr-check" }, out string output);
+                    found = OsModsResult(output);
+                });
+            }
+            catch { return; }
+            finally { ClearLoad(); }
+            if (found is not JsonElement r || !r.TryGetProperty("newer", out var newer) || newer.ValueKind != JsonValueKind.True) return;
+            string latest = r.TryGetProperty("latest", out var l) ? l.GetString() ?? "" : "";
+            string have = r.TryGetProperty("installed", out var h) ? h.GetString() ?? "" : "";
+            long size = r.TryGetProperty("size", out var sz) && sz.TryGetInt64(out long n) ? n : 0;
+            bool delta = r.TryGetProperty("delta", out var d) && d.ValueKind == JsonValueKind.True;
+            string mb = size > 0 ? $"{size / (1024.0 * 1024.0):0} MB" : "";
+            var answer = UiLocale.Message(this,
+                UiLocale.Interpolate($"HDR {latest} is out (you have {have}).\n\n") +
+                (delta ? UiLocale.Interpolate($"Update now? Only the files that changed are downloaded ({mb}).")
+                       : UiLocale.Interpolate($"Update now? The whole package is downloaded ({mb}).")) +
+                UiLocale.Text("\n\nNo: play this version for now."),
+                "OpenSmash", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (answer != DialogResult.Yes) return;
+            try
+            {
+                SetLoad("UPDATING HDR", 0);
+                await Task.Run(() => OsMods(new[] { "hdr-update" }, line =>
+                {
+                    var pct = Regex.Match(line, @"^LOG percent (\d+)");
+                    if (pct.Success) SetLoad("UPDATING HDR", int.Parse(pct.Groups[1].Value) / 100f);
+                }));
+            }
+            catch (Exception ex)
+            {
+                UiLocale.Message(UiLocale.Text("HDR's update didn't go through: ") + ex.Message + UiLocale.Text("\n\nThe version you have starts."), "OpenSmash");
             }
             finally { ClearLoad(); }
         }

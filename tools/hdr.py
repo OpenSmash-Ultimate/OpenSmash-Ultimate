@@ -10,6 +10,8 @@ Usage:
   hdr.py on|off   [--tree <dir>]     turn it on or off (then apply, and build plugins if asked)
   hdr.py only on|off [--tree <dir>]  the launcher's HDR mode: ARCropolis' HDR workspace made active, or the one
                                      before it again
+  hdr.py check    [--tree <dir>]     whether HDR's releases have a newer prerelease than the one installed
+  hdr.py update   [--tree <dir>]     install it (its upgrade package over the release before it, else the whole package)
   hdr.py motion   [--tree <dir>]     write HDR's motion lists again (mods/hdr-motion: tools/hdr_motion.py), then apply
   hdr.py remove   [--tree <dir>]     delete it
 
@@ -488,9 +490,240 @@ def remove(tree, log=print):
     return status(tree)
 
 
+# ---- updates: HDR's newer prereleases, from its releases page ----
+RELEASES = "https://api.github.com/repos/HDR-Development/HDR-PreReleases/releases?per_page=10"
+# The release's upgrade package: the files that changed since the release before it, in the switch-package's layout,
+# a drop-in over an install of that release. Used only when the one installed is that release (else the full package)
+DELTA_ASSETS = ("to-beta.zip", "upgrade.zip")
+FULL_ASSET = "switch-package.zip"
+
+
+def version_key(v):
+    """'v0.50.11-prerelease' -> (0, 50, 11): () for a version that names no number ('local')."""
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:4])
+
+
+def releases(timeout=10):
+    """HDR's prereleases, the newest first: [{"tag", "assets": {name: {"url", "size", "sha256"}}}]."""
+    req = urllib.request.Request(RELEASES, headers={"User-Agent": "OpenSmash mod manager", "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
+            data = json.load(r)
+    except (OSError, ValueError, urllib.error.URLError) as e:
+        raise Error(f"HDR's releases couldn't be read ({e})") from None
+    out = []
+    for rel in data if isinstance(data, list) else []:
+        if rel.get("draft") or not rel.get("tag_name"):
+            continue
+        assets = {}
+        for a in rel.get("assets") or []:
+            digest = a.get("digest") or ""
+            assets[a.get("name", "")] = {"url": a.get("browser_download_url"), "size": int(a.get("size") or 0),
+                                         "sha256": digest[7:] if digest.startswith("sha256:") else None}
+        out.append({"tag": rel["tag_name"], "assets": assets})
+    out.sort(key=lambda r: version_key(r["tag"]), reverse=True)
+    return out
+
+
+def check(tree, rels=None):
+    """Whether HDR's releases have a newer version than the one installed: {"installed", "latest", "newer", "delta"
+    (the upgrade package applies), "asset", "size"}."""
+    have = installed(tree)
+    if not have:
+        raise Error("HDR isn't installed")
+    rels = releases() if rels is None else rels
+    if not rels:
+        raise Error("HDR's releases page lists no release")
+    latest = rels[0]
+    newer = bool(version_key(have)) and version_key(latest["tag"]) > version_key(have)
+    before = rels[1]["tag"] if len(rels) > 1 else None
+    delta = next((n for n in DELTA_ASSETS if n in latest["assets"]), None)
+    use_delta = bool(delta) and before is not None and version_key(before) == version_key(have)
+    asset = delta if use_delta else (FULL_ASSET if FULL_ASSET in latest["assets"] else None)
+    return {"installed": have, "latest": latest["tag"], "newer": newer and asset is not None, "delta": use_delta,
+            "asset": asset, "size": latest["assets"][asset]["size"] if asset else 0}
+
+
+def fetch_asset(info, target, progress=None, log=print, tries=6):
+    """A release's file into target, carried on from where an earlier try stopped; checked against its size and,
+    when GitHub gives one, its SHA-256."""
+    url, size, want = info["url"], info["size"], info.get("sha256")
+    ctx = ssl_context()
+    for attempt in range(1, tries + 1):
+        have = os.path.getsize(target) if os.path.exists(target) else 0
+        if not size or have < size:
+            headers = {"User-Agent": "OpenSmash mod manager", **({"Range": f"bytes={have}-"} if have else {})}
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60, context=ctx) as r:
+                    resumed = have and r.status == 206
+                    done = have if resumed else 0
+                    with open(target, "ab" if resumed else "wb") as out:
+                        while chunk := r.read(1 << 20):
+                            out.write(chunk)
+                            done += len(chunk)
+                            if progress and size:
+                                progress(done * 0.9, size)
+            except urllib.error.HTTPError as e:
+                if not (have and e.code == 416):
+                    raise Error(f"HDR's update didn't download (GitHub said {e.code} {e.reason}): try again later")
+            except (OSError, urllib.error.URLError) as e:
+                if attempt == tries:
+                    raise Error(f"HDR's update didn't download ({e}): try again - it carries on from where it stopped")
+                log(f"the download stopped ({e}); trying again ({attempt + 1} of {tries})")
+                time.sleep(3 * attempt)
+                continue
+        got = os.path.getsize(target)
+        ok = not size or got == size
+        if ok and want:
+            sha = hashlib.sha256()
+            with open(target, "rb") as f:
+                while chunk := f.read(1 << 22):
+                    sha.update(chunk)
+            ok = sha.hexdigest() == want
+        if ok and zipfile.is_zipfile(target):
+            return
+        os.remove(target)
+        if attempt == tries:
+            raise Error("HDR's update didn't download whole: try again later")
+        log("the download isn't whole; downloading it again")
+
+
+def _package_path(name):
+    """A zip member's path in the switch-package's layout (a folder above ultimate/ or atmosphere/ dropped), or None."""
+    name = name.replace("\\", "/")
+    for top in ("ultimate/", "atmosphere/", "skyline/"):
+        if name.startswith(top):
+            return name
+    for top in ("/ultimate/", "/atmosphere/", "/skyline/"):
+        i = name.find(top)
+        if i >= 0 and name.count("/", 0, i) == 0:   # (one folder above: switch-package/ultimate/...)
+            return name[i + 1:]
+    return None
+
+
+def _destination(tree, rel, keep):
+    """Where a package file goes in the install (wanted's files only), or None."""
+    for m in MODS:
+        if rel.startswith(f"ultimate/mods/{m}/"):
+            return os.path.join(tree.mods, m, *rel[len(f"ultimate/mods/{m}/"):].split("/"))
+    if rel.startswith(SD):
+        return os.path.join(tree.root, "dump", "skyline", "sd", *rel.split("/"))
+    for d in PLUGIN_DIRS:
+        if rel.startswith(d) and rel[len(d):] in PLUGINS + tuple(std_plugins.PLUGINS):
+            return os.path.join(keep, rel[len(d):])
+    return None
+
+
+DELETIONS = re.compile(r"(^|/)deletions?\.(json|txt)$", re.I)
+
+
+def apply_delta(tree, package, tag, log=print, progress=None):
+    """An upgrade package over the installed release: its files in place of the ones there (HDR's mods, the
+    stage-alts list, the stage plugins; a standard plugin only when newer, newer_standard), and the files a deletions
+    list in it names removed. The version: its hdr_version.txt, else the release's tag."""
+    keep = os.path.join(folder(tree), "plugins")
+    incoming = os.path.join(folder(tree), "incoming-plugins")
+    shutil.rmtree(incoming, ignore_errors=True)
+    os.makedirs(incoming, exist_ok=True)
+    with zipfile.ZipFile(package) as z:
+        items = []
+        deletions = []
+        for i in z.infolist():
+            if i.is_dir():
+                continue
+            if DELETIONS.search(i.filename.replace("\\", "/")):
+                deletions.append(i)
+                continue
+            rel = _package_path(i.filename)
+            if not rel or ".." in rel.split("/"):
+                continue
+            dest = _destination(tree, rel, incoming)
+            if dest:
+                items.append((i, dest))
+        if not items and not deletions:
+            raise Error(f"HDR's update ({os.path.basename(package)}) has none of HDR's files: not the layout OpenSmash knows")
+        total = sum(i.file_size for i, _d in items) or 1
+        done = 0
+        for i, dest in items:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            tmp = dest + ".new"
+            with z.open(i) as src, open(tmp, "wb") as out:
+                shutil.copyfileobj(src, out, 1 << 20)
+            os.replace(tmp, dest)
+            done += i.file_size
+            if progress:
+                progress(0.9 + 0.1 * done / total)
+        gone = 0
+        for i in deletions:
+            text = z.read(i).decode("utf-8-sig", "replace")
+            try:
+                listed = json.loads(text)
+            except ValueError:
+                listed = text.splitlines()
+            if isinstance(listed, dict):
+                listed = [p for v in listed.values() for p in (v if isinstance(v, list) else [v])]
+            for path in listed if isinstance(listed, list) else []:
+                if not isinstance(path, str):
+                    continue
+                path = path.strip().replace("\\", "/")
+                k = path.find("ultimate/")
+                rel = path[k:] if k >= 0 else _package_path(path)
+                dest = _destination(tree, rel, incoming) if rel and ".." not in rel.split("/") else None
+                if dest and os.path.isfile(dest) and not dest.startswith(incoming):
+                    os.remove(dest)
+                    gone += 1
+    os.makedirs(keep, exist_ok=True)
+    for p in PLUGINS:   # (HDR's stage plugins: kept with it, then among the standard ones)
+        if os.path.isfile(os.path.join(incoming, p)):
+            os.replace(os.path.join(incoming, p), os.path.join(keep, p))
+    newer_standard(tree, incoming, log)
+    shutil.rmtree(incoming, ignore_errors=True)
+    stage_plugins(tree)
+    version = tag
+    try:
+        with open(os.path.join(tree.mods, "hdr", "ui", "hdr_version.txt"), encoding="utf-8-sig") as f:
+            version = f.read().strip() or tag
+    except OSError:
+        pass
+    log(f"{len(items)} of HDR's files updated" + (f", {gone} removed" if gone else ""))
+    return version
+
+
+def update(tree, progress=None, log=print, rels=None):
+    """HDR updated to its newest prerelease, if it is newer: the upgrade package when the installed release is the one
+    before it, else the whole switch-package. An apply (and a build of its plugin) follows. Whether it was updated."""
+    rels = releases() if rels is None else rels
+    c = check(tree, rels)
+    if not c["newer"]:
+        log(f"HewDraw Remix {c['installed']} is the newest")
+        return False
+    info = rels[0]["assets"][c["asset"]]
+    free = shutil.disk_usage(folder(tree)).free
+    need = info["size"] + (INSTALLED_SIZE if not c["delta"] else info["size"] * 3) + (1 << 30)
+    if free < need:
+        raise Error(f"not enough disk space for HDR's update: it needs about {need / (1 << 30):.1f} GB, "
+                    f"{free / (1 << 30):.1f} GB is free")
+    target = os.path.join(folder(tree), "update-" + re.sub(r"[^\w.-]", "_", c["latest"]) + ".zip")
+    log(f"updating HewDraw Remix {c['installed']} -> {c['latest']} ({c['asset']}, {info['size'] / (1 << 20):.0f} MB)")
+    fetch_asset(info, target, progress, log)
+    record = {"version": c["latest"], "updated": time.strftime("%Y-%m-%d %H:%M"), "from": c["asset"]}
+    if c["delta"]:
+        record["version"] = apply_delta(tree, target, c["latest"], log, (lambda f: progress(f, 1)) if progress else None)
+        with open(os.path.join(folder(tree), "installed.json"), "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=1)
+    else:
+        stage = unpack(tree, target, (lambda f: progress(f, 1)) if progress else None)
+        place(tree, stage, record, log)
+    os.remove(target)
+    bake_motion(tree, log)   # (its motion patches: written again if they changed)
+    log(f"HewDraw Remix {record['version']} installed")
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=("status", "download", "install", "on", "off", "only", "motion", "remove"))
+    ap.add_argument("command", choices=("status", "download", "install", "on", "off", "only", "motion", "check", "update",
+                                        "remove"))
     ap.add_argument("what", nargs="?", help="install: the package (zip or folder); only: on or off")
     ap.add_argument("--tree", default=os.path.dirname(HERE))
     a = ap.parse_args()
@@ -514,6 +747,12 @@ def main():
             out = status(tree)
         elif a.command in ("on", "off"):
             out = set_on(tree, a.command == "on")
+        elif a.command == "check":
+            out = check(tree)
+        elif a.command == "update":
+            if update(tree):
+                mods.apply(tree)
+            out = status(tree)
         elif a.command == "motion":
             if bake_motion(tree, force=True) is None:
                 raise Error("HDR isn't installed")
