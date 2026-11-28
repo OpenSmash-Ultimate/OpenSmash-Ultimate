@@ -51,6 +51,7 @@ typedef struct Entry {
     u64 key;
     u32 size, passes;        /* passes: pictures since the last change */
     int used, live, cut;     /* live: changes faster than the logic; cut: the last change was a jump */
+    int moving;              /* the last change came a logic frame after the one before (extrapolate guesses on only then) */
     u64 seen;                /* the picture it was last read in */
     u8 *last, *prev;         /* (size bytes each) */
 } Entry;
@@ -186,7 +187,7 @@ const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, 
         e->last = malloc(size); e->prev = malloc(size);
         if (!e->last || !e->prev) { free(e->last); free(e->prev); e->last = e->prev = NULL; e->size = 0; return NULL; }
         memcpy(e->last, scratch, size); memcpy(e->prev, scratch, size);
-        e->size = size; e->passes = 0; e->live = 1; e->cut = 0;
+        e->size = size; e->passes = 0; e->live = 1; e->cut = 0; e->moving = 0;
         return NULL;
     }
     float per = rt_passes_per_logic > 1 ? rt_passes_per_logic : (float)rt_refresh_mult;
@@ -196,6 +197,7 @@ const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, 
         u32 changed = 0, jumps = 0;
         for (u32 k = 0; k < n; k++) if (now[k] != last[k]) { changed++; jumps += !smooth(last[k], now[k]); }
         e->live = (float)(e->passes + 1) < per * 0.75f;   /* (changed again sooner than a logic frame lasts) */
+        e->moving = (float)(e->passes + 1) <= per * 1.25f;  /* (and changed a logic frame before too: in motion, not a step from rest) */
         e->cut = jumps * 3 > changed;
         memcpy(e->prev, e->cut ? scratch : e->last, size);   /* (a cut: nothing to blend from) */
         memcpy(e->last, scratch, size);
@@ -207,6 +209,12 @@ const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, 
     if (a > 1) a = 1;
     int extrapolate = display_motion() == 2;
     if ((extrapolate && a <= 0) || (!extrapolate && a >= 1)) return NULL;   /* (the game's own picture) */
+    /* (extrapolate: only while the buffer is in motion, and only until the next logic frame is due. Until 2026-11-28 a
+     * buffer that stopped stayed drawn a whole step past its last state - a still Steve a few pixels above the block a
+     * nil2 put under him, until he moved - and a single step from rest, as when a model shows one of its parts by moving
+     * it out of another (Steve's face and eyes swapping expression in a taunt), was carried on past where the game put
+     * it: two faces at once. Both now draw the game's newest state - never an older one, so no delay is added.) */
+    if (extrapolate && (a >= 1 || !e->moving)) return NULL;
     const u32 *prev = (const u32 *)e->prev;
     u32 *o = (u32 *)out;
     for (u32 k = 0; k < n; k++) {
