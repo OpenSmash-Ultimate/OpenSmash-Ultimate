@@ -108,7 +108,25 @@ def fetch(tag, build=os.path.join(ROOT, "build"), get=download, run_check=check,
             shutil.copy2(old, exe)
         raise Error(f"the {tag} runtime does not accept this build's game library, so the old one is back:\n{said}")
     log(f"{tag}: the runtime is in place ({exe}; the old one is {os.path.basename(old)})")
+    placed(build, exe)
     return exe
+
+
+def placed(build, exe):
+    """(SSBU_BUILD_COMMIT_CHECK) the prebuilt runtime's commit in build_commit.txt (tools/build_commit.py): the one its
+    release wrote into it, else its commit.txt's (a runtime of a release that did not write it). The game library keeps
+    the commit of its own last link."""
+    import build_commit
+    said, _at = build_commit.read(exe)
+    commit = said or None
+    if not commit:
+        try:
+            with open(os.path.join(build, "commit.txt"), encoding="utf-8") as f:
+                word = (f.read().split() or [""])[0].lower()
+            commit = word if re.fullmatch(r"[0-9a-f]{40}", word) else None
+        except OSError:
+            commit = None
+    build_commit.record(exe, commit=commit)
 
 
 def main(argv):

@@ -1642,6 +1642,7 @@ def link(dirs, exe, rt_dir=None, steps=None):
     (game_tables.c) and the NROs' list, and the exe is the runtime with the program's side
     (game_funcs.c): tools/game_dll.py. The game's objects are the same either way."""
     import cc
+    import build_commit   # (here, not at the top: link is not part of the generator's fingerprint, modcache DRIVER_ONLY)
     t0 = time.time()
     rt_dir = os.path.abspath(rt_dir or os.path.join(os.path.dirname(exe), "rt"))   # (one spelling: its objects' keys name it)
     os.makedirs(rt_dir, exist_ok=True)
@@ -1768,6 +1769,7 @@ def link(dirs, exe, rt_dir=None, steps=None):
         cc.link(objs, exe)
         if kept:
             library_touch(game_lib, library)
+            build_commit.record(exe)   # (the library keeps the commit of its last link)
             print(f"{game_dll.DLL}: linked from these same {len(library)} objects already: kept as it is")
         else:
             try:
@@ -1778,12 +1780,14 @@ def link(dirs, exe, rt_dir=None, steps=None):
                 # the link and said it was done): no program, so that run links again
                 os.remove(exe)
                 raise
+            build_commit.record(exe, game_lib)   # (before library_stamp: it records the library's size and date)
             library_stamp(game_lib, library)
     else:
         objs += game
         # a wrap no module has (a made-up game's modules, tools/mac/boottest): its original is a stub nothing calls
         # (one alias, straight to the stub: lld-link does not follow an alias to another alias)
         cc.link(objs, exe, [f"/alternatename:f_{a:x}_orig=rt_wrap_missing" for a in sorted(hle_wraps())])
+        build_commit.record(exe)   # (the commit the program is built from, written into it: SSBU_BUILD_COMMIT_CHECK)
     isa.record(os.path.dirname(os.path.abspath(exe)), cc.ISA, cc.ISA_TOLD)   # (what build_game.py's build_is_current compares)
     # the controllers' SDL3.dll, which the runtime loads from the exe's own folder
     if cc.SDL3_DLL:

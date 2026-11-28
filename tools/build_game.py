@@ -1128,7 +1128,12 @@ def build_is_current(dll=False):
     nro = os.path.join(DUMP, "nro")
     inputs += [os.path.join(nro, n) for n in os.listdir(nro) if n.endswith(".nro")] if os.path.isdir(nro) else []
     newest = max(os.path.getmtime(p) for p in inputs if os.path.isfile(p))
-    return os.path.getmtime(EXE) > newest and (not dll or os.path.getmtime(library) > newest)
+    if not (os.path.getmtime(EXE) > newest and (not dll or os.path.getmtime(library) > newest)):
+        return False
+    # (SSBU_BUILD_COMMIT_CHECK, on unless 0) and the commit the program says it was built from is the sources' one,
+    # or what it was built from is the same (tools/build_commit.py): the dates alone passed a program an update never built
+    import build_commit
+    return not build_commit.reason(ROOT, EXE, log=log)
 
 
 def installed_ram_gb():

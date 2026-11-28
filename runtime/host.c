@@ -191,15 +191,21 @@ static void report_open(const char *kind, char *path, size_t n) {
 #endif
 }
 
-/* The report's last line (where it is), and closed. */
+const char *rt_build_commit(void);   /* hle_build_commit.c: the commit the build wrote into this program, or NULL */
+void rt_build_commit_boot(void);
+
+/* The report's last lines (the build's commit, where it is), and closed. */
 static void report_close(const char *path) {
+    const char *commit = rt_build_commit();
 #ifdef _WIN32
     if (report_file == INVALID_HANDLE_VALUE) return;
+    if (commit) out("build commit: %s\n", commit);
     out("report: %s\n", path);
     CloseHandle(report_file);
     report_file = INVALID_HANDLE_VALUE;
 #else
     if (report_fd < 0) return;
+    if (commit) out("build commit: %s\n", commit);
     out("report: %s\n", path);
     close(report_fd);
     report_fd = -1;
@@ -2500,6 +2506,7 @@ int main(int argc, char **argv) {
 #ifdef SSBU_GAME_DLL
     if (!game_open(0)) return 4;
 #endif
+    rt_build_commit_boot();   /* (the commit this build is, and the sources': SSBU_BUILD_COMMIT_CHECK) */
     if (!game_version_ok()) return 4;
     for (int i = options; i < argc; i++) {
         if (!strcmp(argv[i], "--trace")) rt_trace = 1;

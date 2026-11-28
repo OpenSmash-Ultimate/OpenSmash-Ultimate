@@ -21,6 +21,52 @@ static class Program
         if (ok) passed++; else { failed++; Console.WriteLine("FAIL " + what); }
     }
 
+    // ---- the commit the build says it was built from (BuildCommit.cs, tools/build_commit.py), on a made-up build
+    static void BuildCommitChecks()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "os-core-build-commit-" + Guid.NewGuid().ToString("N"));
+        string a = new string('a', 40), b = new string('b', 40);
+        byte[] Made(string value, int pad) => Encoding.ASCII.GetBytes("MZ" + new string('x', pad) + "SSBU-BUILD-COMMIT:" + value + " tail");
+        void Lines(string path, params string[] lines) => File.WriteAllLines(path, lines);
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "tools"));
+            Directory.CreateDirectory(Path.Combine(root, "build"));
+            Lines(Path.Combine(root, "tools", "source_version.txt"), a + " 2026-11-28");
+            Check(BuildCommit.Read(root) == null && !BuildCommit.Behind(root, a), "build commit: no program, nothing behind");
+            File.WriteAllBytes(BuildCommit.Program(root), Encoding.ASCII.GetBytes("MZ a build of before v0.5.5"));
+            Check(BuildCommit.Read(root) == null, "build commit: a program without the marker says none");
+            Check(BuildCommit.Behind(root, a) == OperatingSystem.IsWindows(), "build commit: a build of before v0.5.5 is behind (Windows)");
+            Check(BuildCommit.Reported(root) == a, "build commit: a report names the sources' then");
+            File.WriteAllBytes(BuildCommit.Program(root), Made(new string('?', 40), 5 << 20));   // (past the first 4 MB read)
+            Check(BuildCommit.Read(root) == "", "build commit: the marker never written, found through the file");
+            Check(!BuildCommit.Behind(root, a), "build commit: never written is not behind (the dates decide)");
+            File.WriteAllBytes(BuildCommit.Program(root), Made(b, 100));
+            Check(BuildCommit.Read(root) == b, "build commit: read through the file");
+            Lines(BuildCommit.RecordFile(root), "# x", "commit " + b, "exe_at " + (2 + 100 + 18));
+            Check(BuildCommit.Read(root, scan: false) == b, "build commit: read where the record says");
+            Check(BuildCommit.Reported(root) == b, "build commit: a report names the build's");
+            Check(BuildCommit.Behind(root, a) == OperatingSystem.IsWindows(), "build commit: another commit than the sources' is behind");
+            Check(VersionInfo.Line(root).Contains("BUILD bbbbbbb"), "build commit: shown when it is not the sources': " + VersionInfo.Line(root));
+            File.AppendAllLines(BuildCommit.RecordFile(root), new[] { "current " + new string('c', 40) + " " + a });
+            Check(!BuildCommit.Behind(root, a), "build commit: current for the sources (an update of the launcher only)");
+            Lines(BuildCommit.RecordFile(root), "exe_at 7");   // (wrong: looked for)
+            Check(BuildCommit.Read(root) == b && BuildCommit.Read(root, scan: false) == null, "build commit: a wrong record is not trusted");
+            File.WriteAllBytes(BuildCommit.Program(root), Made(a, 100));
+            Check(!BuildCommit.Behind(root, a) && !VersionInfo.Line(root).Contains("BUILD"), "build commit: the sources' commit");
+            Environment.SetEnvironmentVariable(BuildCommit.Variable, "0");
+            File.WriteAllBytes(BuildCommit.Program(root), Made(b, 100));
+            Lines(BuildCommit.RecordFile(root), "exe_at 120");
+            Check(!BuildCommit.Behind(root, a) && BuildCommit.Reported(root) == a && !VersionInfo.Line(root).Contains("BUILD"),
+                  "build commit: SSBU_BUILD_COMMIT_CHECK=0, the sources' as before");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(BuildCommit.Variable, null);
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
     // ---- "Verify game files" (FileCheck.cs) on a made-up install: whole, then each kind of damage and its repair
     static void FileChecks()
     {
@@ -898,6 +944,7 @@ static class Program
         finally { try { Directory.Delete(logDir, true); } catch { } }
 
         FileChecks();
+        BuildCommitChecks();
 
         Console.WriteLine($"{passed} passed, {failed} failed");
         return failed == 0 ? 0 : 1;

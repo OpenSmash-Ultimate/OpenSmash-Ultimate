@@ -98,8 +98,8 @@ class Generated(unittest.TestCase):
                       '__attribute__((weak)) void f_7100001234_orig(Cpu *c) { rt_game_missing(c); }\n#endif\n', text)
         self.assertIn('static const RtGameOrig origs[] = {\n    {0x7100001234ull, f_7100001234_orig},\n    {0, 0}\n};\n', text)
         self.assertIn('static const RtModule *const boot[] = {&rt_module_main, &rt_module_subsdk0, &rt_module_sdk};\n', text)
-        # one name exported: the function that hands all of it over
-        self.assertEqual(text.count('RT_GAME_EXPORT'), 1)
+        # two names exported: the function that hands all of it over, and the commit the library was linked from
+        self.assertEqual(text.count('RT_GAME_EXPORT'), 2)   # (and rt_game_build_commit: SSBU_BUILD_COMMIT_CHECK)
         self.assertIn('RT_GAME_EXPORT const RtGameTables *rt_game_tables(void) {\n', text)
         self.assertIn('(RtGameTables){RT_GAME_ABI, RT_GAME_SIZES, RT_GAME_ISA, boot, rt_nro_modules, rt_nro_count,\n'
                       f'                       {n + 4}, imports, origs, 1, &hooks}};\n', text)

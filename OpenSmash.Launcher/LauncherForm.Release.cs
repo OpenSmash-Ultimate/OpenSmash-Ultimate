@@ -72,7 +72,18 @@ namespace OpenSmash.Launcher
             _updateHead = _release.Commit;
             Updater.WriteLobby(_release, _repo);
             bool launcher = Updater.LauncherOutdated(_release), game = Updater.GameOutdated(_release, _repo);
+            // (SSBU_BUILD_COMMIT_CHECK) the build is not the sources' commit and not current for it: an update whose build
+            // was skipped or failed. Update (and Play's retry) build it again: the pending build's marker.
+            string built = await Task.Run(() => BuildCommit.Read(_repo) ?? "");
+            bool behind = !game && local.Length > 0 && Updater.InstalledCommit(_repo) == _release.Commit && !Updater.DevCopy(_repo)
+                          && await Task.Run(() => BuildCommit.Behind(_repo, local));
+            if (behind)
+            {
+                game = true;
+                try { Directory.CreateDirectory(Path.Combine(_repo, "config")); File.WriteAllText(Updater.PendingMarker(_repo), local); } catch { }
+            }
             Updater.Log(_repo, $"check ({channel}): release {_release.Version} {_release.Commit[..10]}, installed {(local.Length > 0 ? local[..Math.Min(10, local.Length)] : "?")}, " +
+                               $"build {(built.Length > 0 ? built[..10] : "not recorded")}{(behind ? " (behind its sources: built again at Update)" : "")}, " +
                                $"launcher {Updater.Current}{(launcher ? " (older)" : "")}");
             if (launcher || game)
             {
