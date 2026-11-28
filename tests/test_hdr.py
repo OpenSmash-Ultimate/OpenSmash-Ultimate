@@ -262,6 +262,14 @@ class HdrOnly(unittest.TestCase):
         hdr.set_only(self.tree, False, lambda s: None)
         self.assertEqual((sky / 'plugins.txt').read_text().split(),
                          ['arcropolis', 'smashline', 'training_modpack', 'one_slot_eff', 'mother_smash_fx'])
+        # Play: HDR's stage plugins out (online, the other player's game has none), unless HDR's switch is on
+        (sky / 'plugins_all.txt').write_text('arcropolis\t(standard) libarcropolis.nro\nstage_alts\t(standard) libstage_alts.nro\n'
+                                             'stage_config\t(standard) libstage_config.nro\n')
+        skyline.write_list(str(self.root), lambda s: None)
+        self.assertEqual((sky / 'plugins.txt').read_text().split(), ['arcropolis'])
+        hdr.set_on(self.tree, True, lambda s: None)
+        skyline.write_list(str(self.root), lambda s: None)
+        self.assertEqual((sky / 'plugins.txt').read_text().split(), ['arcropolis', 'stage_alts', 'stage_config'])
 
     def test_os_mods_switches_play_mods_in_hdr_mode(self):
         import os_mods

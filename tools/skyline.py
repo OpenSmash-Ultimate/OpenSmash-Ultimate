@@ -538,7 +538,13 @@ def write_list(tree, log=print):
             allowed |= {ln.split("#")[0].strip() for ln in f if ln.split("#")[0].strip()}
     except OSError:
         pass
-    names = [r[0] for r in rows if not hdr or r[0] in allowed or r[1] in keep]
+    # Play with HDR switched off: HDR's stage plugins (installed for good, so the game is built with them) left out -
+    # they change stages (stage-alts' forms), and online the other player's game would not have them
+    hdr_on = all(t.load()["mods"].get(m, {}).get("enabled") for m in mods.HDR_FOLDERS[:3])
+    stage = {"stage_alts", "stage_config"} if keep and not hdr and not hdr_on else set()
+    names = [r[0] for r in rows if (not hdr or r[0] in allowed or r[1] in keep) and r[0] not in stage]
+    if stage & {r[0] for r in rows}:
+        log("Play: HDR's stage plugins left out (they run in HDR mode, or with HDR switched on)")
     if hdr and len(names) < len(rows):
         log("HDR mode: plugins HDR doesn't ship with left out: " + ", ".join(r[0] for r in rows if r[0] not in names)
             + " (more for HDR mode: dump/hdr/plugins_extra.txt)")
