@@ -13,7 +13,7 @@ namespace OpenSmash.Launcher
         const uint SigdnFileSystemPath = 0x80058000;
         const int HResultCanceled = unchecked((int)0x800704C7);
 
-        public static bool Show(IWin32Window owner, out string path, out bool asLink)
+        public static bool Show(IWin32Window owner, out string path, out bool asLink, string text = "Pick a mod folder", bool offerLink = true)
         {
             path = "";
             asLink = false;
@@ -21,8 +21,8 @@ namespace OpenSmash.Launcher
             dialog.SetOptions(FosPickFolders | FosForceFileSystem | FosNoChangeDir | FosPathMustExist);
             dialog.SetTitle("Select Folder");
             var customize = (IFileDialogCustomize)dialog;
-            customize.AddText(0, "Pick a mod folder");
-            customize.AddCheckButton(CheckId, "Add as symbolic link", false);
+            customize.AddText(0, text);
+            if (offerLink) customize.AddCheckButton(CheckId, "Add as symbolic link", false);
             int hr = dialog.Show(owner.Handle);
             if (hr == HResultCanceled) return false;
             if (hr < 0) Marshal.ThrowExceptionForHR(hr);
@@ -30,7 +30,7 @@ namespace OpenSmash.Launcher
             item.GetDisplayName(SigdnFileSystemPath, out IntPtr name);
             try { path = Marshal.PtrToStringUni(name) ?? ""; }
             finally { Marshal.FreeCoTaskMem(name); }
-            customize.GetCheckButtonState(CheckId, out asLink);
+            if (offerLink) customize.GetCheckButtonState(CheckId, out asLink);
             return path != "";
         }
 

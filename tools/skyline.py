@@ -85,9 +85,18 @@ STANDARD = ("skyline", "plugins")   # (<tree>/skyline/plugins: the community plu
 
 
 def standard(tree):
-    """[(label, plugin file)] of the standard plugins (<tree>/skyline/plugins/*.nro), by name."""
+    """[(label, plugin file)] of the standard plugins (<tree>/skyline/plugins/*.nro), by name. HDR only (tools/hdr.py
+    set_only): only the ones it lists - the others stay built into the game, not loaded."""
     folder = os.path.join(tree, *STANDARD)
     names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".nro")) if os.path.isdir(folder) else []
+    try:
+        with open(os.path.join(tree, "mods", "mods.json"), encoding="utf-8") as f:
+            only = json.load(f).get("hdr_only")
+    except (OSError, ValueError, AttributeError):
+        only = None
+    if isinstance(only, dict) and only.get("plugins"):
+        keep = {n.lower() for n in only["plugins"]}
+        names = [n for n in names if n.lower() in keep]
     return [("(standard) " + n, os.path.join(folder, n)) for n in names]
 
 
@@ -99,9 +108,7 @@ def turned_on(tree):
     state = t.load()
     out = standard(tree)
     have = {os.path.basename(f).lower() for _n, f in out}
-    for name in state["order"]:
-        if not state["mods"].get(name, {}).get("enabled"):
-            continue
+    for name in mods.seen(t, state):   # (and HDR's, once installed: ARCropolis runs its plugin in HDR's workspace)
         for rel in mods.plugins(os.path.join(t.mods, name)):
             if os.path.basename(rel).lower() in NATIVE | have:
                 continue
@@ -424,6 +431,7 @@ def sync(tree, log=print, jobs=1):
             f.writelines(h + "\n" for h in missing)
     record = load_record(p)
     names = []
+    owner = {}   # (each plugin's mod: plugins_all.txt, write_list)
     direct = set()
     skip = set()   # (dump/skyline/skip.txt: plugins left out, by module name or mod-relative file - one that does not run yet)
     if os.path.exists(os.path.join(p.skyline, "skip.txt")):
@@ -442,6 +450,7 @@ def sync(tree, log=print, jobs=1):
             direct.add(name)
         if name not in names:
             names.append(name)
+            owner[name] = mod
             log(f"{mod}: plugin {os.path.basename(source)} -> {name}")
     prune_patches(p, set(names), log)
     with open(p.record, "w", encoding="utf-8") as f:
@@ -449,24 +458,39 @@ def sync(tree, log=print, jobs=1):
     import mods
     t = mods.Tree(tree)
     state = t.load()
+    lines = []   # ([mods folder], data root): each data root of a mod (a pack keeps its mods in subfolders)
+    for n in mods.seen(t, state):   # (the turned-on mods, and HDR's once installed: arc_workspace.py picks between them)
+        folder = os.path.join(t.mods, n)
+        roots = []
+        for dp, dirs, _f in os.walk(folder):
+            if any(d.lower() in mods.ROOTS for d in dirs):
+                roots.append(dp)
+            dirs[:] = [d for d in dirs if d.lower() not in mods.ROOTS]   # (not into a root's own data)
+        for r in roots or [folder]:
+            lines.append((n, os.path.relpath(r, t.mods).replace(os.sep, "/")))
+    for extra in (mods.CHARACTERS, mods.HDR_SHARES):   # (the plugins' new characters, HDR's costumes' shares: last)
+        if os.path.isdir(os.path.join(t.mods, extra)):
+            lines.append((extra, extra))
+    import arc_workspace
+    hdr = set(mods.hdr_seen(t)) | {mods.HDR_SHARES}
+    others = [rel for n, rel in lines if n not in hdr]
+    hdr_on = all(state["mods"].get(m, {}).get("enabled") for m in mods.HDR_FOLDERS[:3])
+    if mods.hdr_seen(t) and not hdr_on and not arc_workspace.ready(tree, others):
+        # (no ARCropolis settings to keep HDR's workspace in yet, or a mod cache not read here: shown, HDR's folders
+        # would be turned on with the user's mods. So only when switched on, as before)
+        log("HDR's folders aren't shown to ARCropolis while it is off: no HDR workspace can be kept yet "
+            "(ARCropolis makes its settings at the game's first start)")
+        lines = [(n, rel) for n, rel in lines if n not in hdr]
+    written = []
     with open(os.path.join(p.skyline, "mods.txt"), "w", encoding="utf-8", newline="\n") as f:   # (the runtime's mods: mount)
-        written = set()
-        for n in state["order"]:   # (each data root of a mod: a pack keeps its mods in subfolders)
-            if state["mods"].get(n, {}).get("enabled"):
-                folder = os.path.join(t.mods, n)
-                roots = []
-                for dp, dirs, _f in os.walk(folder):
-                    if any(d.lower() in mods.ROOTS for d in dirs):
-                        roots.append(dp)
-                    dirs[:] = [d for d in dirs if d.lower() not in mods.ROOTS]   # (not into a root's own data)
-                roots = roots or [folder]
-                for r in roots:   # (once each: a pack and its parts can name the same folder)
-                    rel = os.path.relpath(r, t.mods).replace(os.sep, "/")
-                    if rel not in written:
-                        written.add(rel)
-                        f.write(rel + "\n")
-        if os.path.isdir(os.path.join(t.mods, mods.CHARACTERS)):   # (the plugins' new characters: last, mods.characters_mod)
-            f.write(mods.CHARACTERS + "\n")
+        for _n, rel in lines:
+            if rel not in written:   # (once each: a pack and its parts can name the same folder)
+                written.append(rel)
+                f.write(rel + "\n")
+    try:   # (ARCropolis' workspaces: HDR's folders in HDR's alone, the others' new mods turned on where they belong)
+        arc_workspace.update(t, written, state, log)
+    except Exception as e:
+        log(f"ARCropolis' workspaces: not updated: {e}")
     try:
         import paramconfig
         paramconfig.write(t, log)
@@ -476,14 +500,59 @@ def sync(tree, log=print, jobs=1):
     # not chainload candidates and must stay in the direct-load list, in dependency order.
     if any(m == "(standard) libarcropolis.nro" for m, _s in turned_on(tree)):
         names = [n for n in names if n in direct]
+    with open(os.path.join(p.skyline, "plugins_all.txt"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("".join(f"{n}\t{owner.get(n, '')}\n" for n in names))
+    write_list(tree, log)
+    missing = [n for n in names if not built_in(tree, n)]
+    if missing:
+        log("not in the game yet (build them: Mods app > Build plugins into the game, or tools/skyline.py build): " + ", ".join(missing))
+    return names
+
+
+# HDR mode's plugins the game runs itself: the ones HDR's own package brings (ARCropolis, Smashline, nro_hook, its
+# stage plugins) - with the CSK Collection, One Slot Effects, param_hook and the Training Modpack running too, HDR's
+# matches stopped in Smashline ("unreachable smashline script called") a few seconds in. More, a name a line:
+# dump/hdr/plugins_extra.txt
+HDR_PLUGINS = ("arcropolis", "nro_hook", "smashline", "stage_alts", "stage_config")
+
+
+def write_list(tree, log=print):
+    """dump/skyline/plugins.txt, the plugins the game runs itself (not ARCropolis' chainload), from plugins_all.txt
+    (sync's): all of them, but in the launcher's HDR mode (mods.hdr_mode) only HDR_PLUGINS and HDR's own - a mod's
+    plugin with a name of its own (not plugin.nro) runs whatever ARCropolis' workspace says, and community plugins
+    HDR doesn't ship with crash its matches. The game reads it as it starts, so this
+    needs no build. The names written, or None without plugins_all.txt."""
+    import mods
+    p = Paths(tree)
+    try:
+        with open(os.path.join(p.skyline, "plugins_all.txt"), encoding="utf-8") as f:
+            rows = [ln.rstrip("\n").split("\t") + [""] for ln in f if ln.strip()]
+    except OSError:
+        return None
+    t = mods.Tree(tree)
+    hdr = mods.hdr_mode(t.load())
+    keep = set(mods.hdr_seen(t))
+    allowed = set(HDR_PLUGINS)
+    try:
+        with open(os.path.join(tree, "dump", "hdr", "plugins_extra.txt"), encoding="utf-8") as f:
+            allowed |= {ln.split("#")[0].strip() for ln in f if ln.split("#")[0].strip()}
+    except OSError:
+        pass
+    # Play with HDR switched off: HDR's stage plugins (installed for good, so the game is built with them) left out -
+    # they change stages (stage-alts' forms), and online the other player's game would not have them
+    hdr_on = all(t.load()["mods"].get(m, {}).get("enabled") for m in mods.HDR_FOLDERS[:3])
+    stage = {"stage_alts", "stage_config"} if keep and not hdr and not hdr_on else set()
+    names = [r[0] for r in rows if (not hdr or r[0] in allowed or r[1] in keep) and r[0] not in stage]
+    if stage & {r[0] for r in rows}:
+        log("Play: HDR's stage plugins left out (they run in HDR mode, or with HDR switched on)")
+    if hdr and len(names) < len(rows):
+        log("HDR mode: plugins HDR doesn't ship with left out: " + ", ".join(r[0] for r in rows if r[0] not in names)
+            + " (more for HDR mode: dump/hdr/plugins_extra.txt)")
     text = "".join(f"{n}\n" for n in names)
     old = open(p.list, encoding="utf-8").read() if os.path.exists(p.list) else ""
     if text != old:
         with open(p.list, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
-    missing = [n for n in names if not built_in(tree, n)]
-    if missing:
-        log("not in the game yet (build them: Mods app > Build plugins into the game, or tools/skyline.py build): " + ", ".join(missing))
     return names
 
 
@@ -1216,7 +1285,8 @@ NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "
              "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py",
              "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_opensmash.ps1", "tools/install_windowsmash.ps1",
              "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py",
-             "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat")
+             "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat", "tools/hdr.py", "tools/hdr_motion.py", "tools/hdr_menu.py",
+             "tools/arc_workspace.py")
 # (SSBU_UPDATE_GATE, on unless 0) Nor these: the commit the sources are at, which the installer's updater writes last,
 # so at EVERY update (tools/install_opensmash.ps1 Update-FromZip) - with it, an update that changed only the launcher
 # rebuilt: build_game.py's steps, the plugins built in again and their test boot (a minute or more) - and the

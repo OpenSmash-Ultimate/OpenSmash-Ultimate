@@ -603,7 +603,7 @@ namespace OpenSmash.Launcher
             float cw = labelW + 44 * s, chh = 38 * s, gap = 6 * s, aw = chh;
             float ctaX = nx - 30 * s - cw;
             float prevX = ctaX - gap - aw, nextX = ctaX + cw + gap;
-            string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
+            string playLabel = _launchMode == "vanilla" ? "VANILLA" : _launchMode == "hdr" ? "HDR" : "PLAY";
             bool playEnabled = _built && !Busy;
             Theme.ButtonAnimated(g, "<", prevX, cy - chh / 2, aw, chh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 16 * s, _alpha, press: Press("nav:mode-prev"));
             Theme.ButtonAnimated(g, playLabel, ctaX, cy - chh / 2, cw, chh, s, primary: true, Hov("nav:play", playEnabled && _hover == "nav:play"), playEnabled, 13 * s, _alpha, press: Press("nav:play"));
@@ -892,7 +892,7 @@ namespace OpenSmash.Launcher
                 var st = PushFade(g, Up(t, 1.05f), 24 * s);
                 float bx = left, by = 494 * s, bh = 52 * s, aw = bh, ag = 8 * s;
                 float[] widths = { 190, 130, 160, 105 };
-                string playLabel = _launchMode == "vanilla" ? "VANILLA" : "PLAY";
+                string playLabel = _launchMode == "vanilla" ? "VANILLA" : _launchMode == "hdr" ? "HDR" : "PLAY";
                 bool playEnabled = _built && !Busy;
                 Theme.ButtonAnimated(g, "<", bx, by, aw, bh, s, primary: false, Hov("nav:mode-prev", _hover == "nav:mode-prev"), _built, 18 * s, _alpha, press: Press("nav:mode-prev"));
                 AddHit("nav:mode-prev", bx, by, aw, bh);

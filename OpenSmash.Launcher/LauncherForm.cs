@@ -4245,6 +4245,8 @@ namespace OpenSmash.Launcher
                 UiLocale.Message("The game is not built yet. Run the installer first.", "OpenSmash");
                 return;
             }
+            if (!await SwitchHdrMode()) return;   // (HDR only, or back from it: before the plugin check, which reads what's on)
+            await OfferHdrUpdate();   // (HDR mode: a newer HDR prerelease offered, and installed before the plugin check)
             string unbuilt = await UnbuiltPluginChoice();
             if (unbuilt == "cancel") return;
             if (unbuilt == "build")
@@ -4323,15 +4325,133 @@ namespace OpenSmash.Launcher
             try
             {
                 string path = Path.Combine(_buildDir, "launch_mode.txt");
-                if (File.Exists(path) && File.ReadAllText(path).Trim().Equals("vanilla", StringComparison.OrdinalIgnoreCase))
-                    _launchMode = "vanilla";
+                string mode = File.Exists(path) ? File.ReadAllText(path).Trim().ToLowerInvariant() : "";
+                if (mode == "vanilla" || mode == "hdr")
+                    _launchMode = mode;
             }
             catch { }
         }
 
+        // ---------------------------------------------------------------------------
+        // HDR mode (the third launch mode: < PLAY | VANILLA | HDR >). HewDraw Remix changes every fighter, so it runs
+        // alone: ARCropolis' "HDR" workspace, HDR's folders only, is made the active one (tools/hdr.py set_only,
+        // tools/arc_workspace.py) - every mod's switch and every plugin stays as it is, so nothing is applied or built -
+        // and leaving it (Play or Vanilla) makes the workspace from before active again. Not installed yet: from the switch-package
+        // the player downloaded (a folder it was unpacked to) or, failing that, HDR's checked release from GitHub.
+        string ModsJsonPath => Path.Combine(_repo, "mods", "mods.json");
+        bool HdrInstalled => File.Exists(Path.Combine(_repo, "dump", "hdr", "installed.json")) && Directory.Exists(Path.Combine(_repo, "mods", "hdr"));
+
+        bool HdrOnlyNow()
+        {
+            try
+            {
+                if (!File.Exists(ModsJsonPath)) return false;
+                using var doc = JsonDocument.Parse(File.ReadAllText(ModsJsonPath));
+                return doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("hdr_only", out var only)
+                    && only.ValueKind == JsonValueKind.Object;
+            }
+            catch { return false; }
+        }
+
+        async Task<bool> SwitchHdrMode()
+        {
+            bool want = _launchMode == "hdr";
+            if (want == HdrOnlyNow() && (!want || HdrInstalled)) return true;
+            try
+            {
+                if (want && !HdrInstalled && !await InstallHdr()) return false;
+                SetLoad(want ? "PREPARING HDR" : "LEAVING HDR", -1);
+                await Task.Run(() => OsMods(new[] { "hdr-only", want ? "on" : "off" }));
+                _modsModded = true;   // (an ARCropolis workspace switched: nothing to apply; hdr-only applies when it must)
+                return true;
+            }
+            catch (Exception ex)
+            {
+                UiLocale.Message(ex.Message, "OpenSmash");
+                return false;
+            }
+            finally { ClearLoad(); }
+        }
+
+        // HDR mode's start: HDR's releases page asked for a newer prerelease (tools/hdr.py check; offline or the page
+        // not answering: nothing, the game starts). Yes: its upgrade package (to-beta.zip) over the release before it, or
+        // the whole package, then applied (os_mods.py hdr-update).
+        async Task OfferHdrUpdate()
+        {
+            if (_launchMode != "hdr" || !HdrInstalled) return;
+            JsonElement? found = null;
+            try
+            {
+                SetLoad("CHECKING FOR HDR UPDATES", -1);
+                await Task.Run(() =>
+                {
+                    RunPython(new[] { Path.Combine(_repo, "tools", "os_mods.py"), "hdr-check" }, out string output);
+                    found = OsModsResult(output);
+                });
+            }
+            catch { return; }
+            finally { ClearLoad(); }
+            if (found is not JsonElement r || !r.TryGetProperty("newer", out var newer) || newer.ValueKind != JsonValueKind.True) return;
+            string latest = r.TryGetProperty("latest", out var l) ? l.GetString() ?? "" : "";
+            string have = r.TryGetProperty("installed", out var h) ? h.GetString() ?? "" : "";
+            long size = r.TryGetProperty("size", out var sz) && sz.TryGetInt64(out long n) ? n : 0;
+            bool delta = r.TryGetProperty("delta", out var d) && d.ValueKind == JsonValueKind.True;
+            string mb = size > 0 ? $"{size / (1024.0 * 1024.0):0} MB" : "";
+            var answer = UiLocale.Message(this,
+                UiLocale.Interpolate($"HDR {latest} is out (you have {have}).\n\n") +
+                (delta ? UiLocale.Interpolate($"Update now? Only the files that changed are downloaded ({mb}).")
+                       : UiLocale.Interpolate($"Update now? The whole package is downloaded ({mb}).")) +
+                UiLocale.Text("\n\nNo: play this version for now."),
+                "OpenSmash", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (answer != DialogResult.Yes) return;
+            try
+            {
+                SetLoad("UPDATING HDR", 0);
+                await Task.Run(() => OsMods(new[] { "hdr-update" }, line =>
+                {
+                    var pct = Regex.Match(line, @"^LOG percent (\d+)");
+                    if (pct.Success) SetLoad("UPDATING HDR", int.Parse(pct.Groups[1].Value) / 100f);
+                }));
+            }
+            catch (Exception ex)
+            {
+                UiLocale.Message(UiLocale.Text("HDR's update didn't go through: ") + ex.Message + UiLocale.Text("\n\nThe version you have starts."), "OpenSmash");
+            }
+            finally { ClearLoad(); }
+        }
+
+        async Task<bool> InstallHdr()
+        {
+            var answer = UiLocale.Message(this,
+                UiLocale.Text("HDR (HewDraw Remix) isn't installed yet.\n\n") +
+                UiLocale.Text("Yes: download HDR's newest prerelease from its GitHub page and install it (about 1.5 GB).\n") +
+                UiLocale.Text("No: pick a folder you already unpacked HDR's switch-package to (it has ultimate and skyline in it).\n\n") +
+                UiLocale.Text("In HDR mode only HDR runs. Your other mods stay installed and come back when you pick Play."),
+                "OpenSmash", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (answer == DialogResult.Cancel) return false;
+            string[] args;
+            if (answer == DialogResult.No)
+            {
+                if (!FolderPicker.Show(this, out string path, out _, "Pick the folder HDR's switch-package was unpacked to", offerLink: false)) return false;
+                args = new[] { "hdr-install", path };
+                SetLoad("INSTALLING HDR", -1);
+            }
+            else
+            {
+                args = new[] { "hdr-download" };
+                SetLoad("DOWNLOADING HDR", 0);
+            }
+            await Task.Run(() => OsMods(args, line =>
+            {
+                var pct = Regex.Match(line, @"^LOG percent (\d+)");
+                if (pct.Success) SetLoad(args[0] == "hdr-download" ? "DOWNLOADING HDR" : "INSTALLING HDR", int.Parse(pct.Groups[1].Value) / 100f);
+            }));
+            return HdrInstalled;
+        }
+
         void CycleLaunchMode(int delta)
         {
-            string[] modes = { "mods", "vanilla" };
+            string[] modes = { "mods", "vanilla", "hdr" };
             int i = Array.IndexOf(modes, _launchMode);
             if (i < 0) i = 0;
             i = (i + delta) % modes.Length;
