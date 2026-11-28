@@ -625,13 +625,47 @@ def _destination(tree, rel, keep):
     return None
 
 
-DELETIONS = re.compile(r"(^|/)deletions?\.(json|txt)$", re.I)
+DELETIONS = re.compile(r"(^|/)[\w.-]*delet[\w.-]*\.(json|txt)$", re.I)   # (deleted_files.json, deletions.json, ...)
 
 
-def apply_delta(tree, package, tag, log=print, progress=None):
+def deletion_paths(text):
+    """The paths a deleted-files list names: JSON (a list, or an object holding lists, at any depth) or one a line."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return [ln.strip() for ln in text.splitlines() if ln.strip()]
+    out = []
+
+    def walk(v):
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+    walk(data)
+    return out
+
+
+def _deletion_rel(path):
+    """A deleted-files list's path in the package layout (sd:/ultimate/..., /ultimate/..., mods/hdr/...), or None."""
+    path = path.strip().replace("\\", "/")
+    k = path.find("ultimate/")
+    if k >= 0:
+        rel = path[k:]
+    elif path.lstrip("/").startswith("mods/"):
+        rel = "ultimate/" + path.lstrip("/")
+    else:
+        rel = _package_path(path.lstrip("/"))
+    return rel if rel and ".." not in rel.split("/") else None
+
+
+def apply_delta(tree, package, tag, log=print, progress=None, deleted=()):
     """An upgrade package over the installed release: its files in place of the ones there (HDR's mods, the
     stage-alts list, the stage plugins; a standard plugin only when newer, newer_standard), and the files a deletions
-    list in it names removed. The version: its hdr_version.txt, else the release's tag."""
+    list in it (or deleted: the release's deleted-files list's text) names removed. The version: its hdr_version.txt, else the release's tag."""
     keep = os.path.join(folder(tree), "plugins")
     incoming = os.path.join(folder(tree), "incoming-plugins")
     shutil.rmtree(incoming, ignore_errors=True)
@@ -651,7 +685,7 @@ def apply_delta(tree, package, tag, log=print, progress=None):
             dest = _destination(tree, rel, incoming)
             if dest:
                 items.append((i, dest))
-        if not items and not deletions:
+        if not items and not deletions and not deleted:
             raise Error(f"HDR's update ({os.path.basename(package)}) has none of HDR's files: not the layout OpenSmash knows")
         total = sum(i.file_size for i, _d in items) or 1
         done = 0
@@ -665,22 +699,12 @@ def apply_delta(tree, package, tag, log=print, progress=None):
             if progress:
                 progress(0.9 + 0.1 * done / total)
         gone = 0
-        for i in deletions:
-            text = z.read(i).decode("utf-8-sig", "replace")
-            try:
-                listed = json.loads(text)
-            except ValueError:
-                listed = text.splitlines()
-            if isinstance(listed, dict):
-                listed = [p for v in listed.values() for p in (v if isinstance(v, list) else [v])]
-            for path in listed if isinstance(listed, list) else []:
-                if not isinstance(path, str):
-                    continue
-                path = path.strip().replace("\\", "/")
-                k = path.find("ultimate/")
-                rel = path[k:] if k >= 0 else _package_path(path)
-                dest = _destination(tree, rel, incoming) if rel and ".." not in rel.split("/") else None
-                if dest and os.path.isfile(dest) and not dest.startswith(incoming):
+        texts = [z.read(i).decode("utf-8-sig", "replace") for i in deletions] + list(deleted)
+        for text in texts:
+            for path in deletion_paths(text):
+                rel = _deletion_rel(path)
+                dest = _destination(tree, rel, incoming) if rel else None
+                if dest and not dest.startswith(incoming) and os.path.isfile(dest):
                     os.remove(dest)
                     gone += 1
     os.makedirs(keep, exist_ok=True)
@@ -717,9 +741,18 @@ def update(tree, progress=None, log=print, rels=None):
     target = os.path.join(folder(tree), "update-" + re.sub(r"[^\w.-]", "_", c["latest"]) + ".zip")
     log(f"updating HewDraw Remix {c['installed']} -> {c['latest']} ({c['asset']}, {info['size'] / (1 << 20):.0f} MB)")
     fetch_asset(info, target, progress, log)
+    deleted = []
+    for name, a in rels[0]["assets"].items():   # (the release's deleted-files list: files gone from HDR since the one before)
+        if c["delta"] and DELETIONS.search(name) and a.get("url"):
+            try:
+                req = urllib.request.Request(a["url"], headers={"User-Agent": "OpenSmash mod manager"})
+                with urllib.request.urlopen(req, timeout=60, context=ssl_context()) as r:
+                    deleted.append(r.read().decode("utf-8-sig", "replace"))
+            except (OSError, urllib.error.URLError) as e:
+                raise Error(f"HDR's deleted-files list ({name}) didn't download ({e}): try again later") from None
     record = {"version": c["latest"], "updated": time.strftime("%Y-%m-%d %H:%M"), "from": c["asset"]}
     if c["delta"]:
-        record["version"] = apply_delta(tree, target, c["latest"], log, (lambda f: progress(f, 1)) if progress else None)
+        record["version"] = apply_delta(tree, target, c["latest"], log, (lambda f: progress(f, 1)) if progress else None, deleted)
         with open(os.path.join(folder(tree), "installed.json"), "w", encoding="utf-8") as f:
             json.dump(record, f, indent=1)
     else:

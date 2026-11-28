@@ -2,6 +2,7 @@
 its stage plugins among the standard ones) and off (they go), removed; the download refused when
 the disk hasn't room. On made-up trees, without the real package."""
 from pathlib import Path
+import io
 import json
 import os
 import shutil
@@ -526,6 +527,29 @@ class HdrUpdate(unittest.TestCase):
         self.assertFalse((self.root / 'skyline' / 'plugins' / 'hdr-launcher.nro').exists())
         self.assertEqual(hdr.installed(self.tree), 'v0.50.11-prerelease')
         self.assertFalse(list((self.root / 'dump' / 'hdr').glob('update-*.zip')))
+
+    def test_the_release_s_deleted_files_list(self):
+        """The release's deleted-files JSON (an asset beside to-beta.zip): those files removed from HDR's folders."""
+        src = self.delta()
+        (self.root / 'mods' / 'hdr-assets' / 'fighter' / 'old.nuanmb').write_bytes(b'old')
+        listed = json.dumps({'deleted': ['sd:/ultimate/mods/hdr-assets/fighter/old.nuanmb', 'mods/../../escape.txt']})
+        rels = self.rels(('to-beta.zip', 'switch-package.zip', 'deleted_files.json'))
+
+        class Answer(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fetch(info, target, progress=None, log=None):
+            shutil.copyfile(src, target)
+        with mock.patch.object(hdr, 'fetch_asset', fetch), mock.patch.object(hdr, 'bake_motion'), \
+                mock.patch.object(hdr.urllib.request, 'urlopen', lambda *a, **k: Answer(listed.encode())):
+            self.assertTrue(hdr.update(self.tree, None, lambda s: None, rels))
+        self.assertFalse((self.root / 'mods' / 'hdr-assets' / 'fighter' / 'old.nuanmb').exists())
+        self.assertFalse((self.root / 'mods' / 'hdr' / 'fighter' / 'gone.bin').exists())   # (the zip's own list too)
+        self.assertTrue((self.root / 'mods' / 'hdr-assets' / 'fighter' / 'x.bin').exists())
 
     def test_a_zip_without_hdr_s_files_changes_nothing(self):
         bad = self.root / 'bad.zip'
