@@ -18,19 +18,31 @@ namespace OpenSmash.Launcher
     // ============================================================================
     static class Theme
     {
-        public static readonly Color Bg      = Color.FromArgb(255, 5, 5, 5);         // --bg
-        public static readonly Color Bg2     = Color.FromArgb(255, 13, 13, 14);      // --bg-2
-        public static readonly Color Bg3     = Color.FromArgb(255, 21, 21, 23);      // --bg-3
-        public static readonly Color Text    = Color.FromArgb(255, 244, 244, 242);   // --fg
-        public static readonly Color Muted   = Color.FromArgb(255, 180, 180, 176);   // --fg-dim
-        public static readonly Color Dim     = Color.FromArgb(255, 138, 138, 134);   // --fg-mute
-        public static readonly Color Accent  = Color.FromArgb(255, 255, 59, 48);     // --red
-        public static readonly Color Accent2 = Color.FromArgb(255, 212, 42, 32);     // darker red
+        public static Color Bg      = Color.FromArgb(255, 5, 5, 5);         // --bg
+        public static Color Bg2     = Color.FromArgb(255, 13, 13, 14);      // --bg-2
+        public static Color Bg3     = Color.FromArgb(255, 21, 21, 23);      // --bg-3
+        public static Color Text    = Color.FromArgb(255, 244, 244, 242);   // --fg
+        public static Color Muted   = Color.FromArgb(255, 180, 180, 176);   // --fg-dim
+        public static Color Dim     = Color.FromArgb(255, 138, 138, 134);   // --fg-mute
+        public static Color Accent  = Color.FromArgb(255, 255, 59, 48);     // --red
+        public static Color Accent2 = Color.FromArgb(255, 212, 42, 32);     // darker red
         public static readonly Color Ready   = Color.FromArgb(255, 61, 255, 138);    // status "up"
         public static readonly Color Bad     = Color.FromArgb(255, 255, 107, 97);    // red, readable as text
         public static readonly Color Warn    = Color.FromArgb(255, 255, 194, 26);    // --amber
         public static readonly Color Info    = Color.FromArgb(255, 59, 224, 255);    // --cyan
         public static readonly Color Line    = Color.FromArgb(36, 255, 255, 255);    // --line
+
+        // Settings > Theme (LauncherForm.Theme.cs): the three colors picked, the shades between them mixed from them as
+        // OpenSmash.Avalonia mixes them (Visuals/LauncherTheme.cs); the site's own shades with its own three colors.
+        public static void SetPalette(Color accent, Color bg, Color text, bool defaults)
+        {
+            Accent = accent; Bg = bg; Text = text;
+            Bg2 = defaults ? Color.FromArgb(255, 13, 13, 14) : Mix(bg, text, .035f);
+            Bg3 = defaults ? Color.FromArgb(255, 21, 21, 23) : Mix(bg, text, .07f);
+            Muted = defaults ? Color.FromArgb(255, 180, 180, 176) : Mix(bg, text, .73f);
+            Dim = defaults ? Color.FromArgb(255, 138, 138, 134) : Mix(bg, text, .55f);
+            Accent2 = defaults ? Color.FromArgb(255, 212, 42, 32) : Mix(accent, bg, .2f);
+        }
 
         // ---------------------------------------------------------------------------
         // Fonts. Anton ships inside the exe (SIL OFL, Assets\Anton-OFL.txt); body and
@@ -385,7 +397,7 @@ namespace OpenSmash.Launcher
         {
             var glows = new (float Cx, float Cy, float Rx, float Ry, float R, float G, float B, float A)[]
             {
-                (W * 0.70f, H * 0.40f, W * 0.60f * 0.7f, H * 0.50f * 0.7f, 255, 59, 48, 0.16f),
+                (W * 0.70f, H * 0.40f, W * 0.60f * 0.7f, H * 0.50f * 0.7f, Accent.R, Accent.G, Accent.B, 0.16f),   // (the accent's glow: Settings > Theme)
                 (W * 0.10f, H * 1.00f, W * 0.80f * 0.7f, H * 0.60f * 0.7f, 255, 255, 255, 0.06f),
             };
             var bmp = new Bitmap(W, H, PixelFormat.Format32bppArgb);

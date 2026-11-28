@@ -26,12 +26,12 @@ namespace OpenSmash.Launcher
     {
         // ---------------------------------------------------------------------------
         // Colours (shared with the installer, see Theme)
-        static readonly Color C_BG      = Theme.Bg;
-        static readonly Color C_TEXT    = Theme.Text;
-        static readonly Color C_MUTED   = Theme.Muted;
-        static readonly Color C_DIM     = Theme.Dim;
-        static readonly Color C_ACCENT  = Theme.Accent;
-        static readonly Color C_ACCENT2 = Theme.Accent2;
+        static Color C_BG      => Theme.Bg;
+        static Color C_TEXT    => Theme.Text;
+        static Color C_MUTED   => Theme.Muted;
+        static Color C_DIM     => Theme.Dim;
+        static Color C_ACCENT  => Theme.Accent;
+        static Color C_ACCENT2 => Theme.Accent2;
         static readonly Color C_READY   = Theme.Ready;
         static readonly Color C_BAD     = Theme.Bad;
         static readonly Color C_LINE    = Theme.Line;
@@ -341,6 +341,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
                 new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "direct", "net_ping", "reports", "telemetry" } },   // ("direct": This network (LAN) only - the official lobbies are relay only)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "remap", "pads" } },
+                new SettingTab { Name = "Theme", SettingKeys = new[] { "theme_preset", "theme_accent", "theme_background", "theme_text", "theme_save", "theme_reset" } },   // (as OpenSmash.Avalonia's: LauncherForm.Theme.cs)
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Advanced", SettingKeys = Array.Empty<string>() },
@@ -376,6 +377,13 @@ namespace OpenSmash.Launcher
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
                 new Setting { Key = "remap", Label = "Remap a controller", Values = new[] { "open" }, Labels = new[] { "Press a button for each of the game's" } },
                 new Setting { Key = "pads", Label = "controllers.ini", Values = new[] { "open" }, Labels = new[] { "Open the file" } },
+                // (Settings > Theme: LauncherForm.Theme.cs - the preset list is filled there, the color rows show their hex)
+                new Setting { Key = "theme_preset", Label = "Color preset", Values = new[] { "custom" }, Labels = new[] { "Custom colors" } },
+                new Setting { Key = "theme_accent", Label = "Accent color", Values = new[] { "pick" }, Labels = new[] { "#FF3B30" } },
+                new Setting { Key = "theme_background", Label = "Background color", Values = new[] { "pick" }, Labels = new[] { "#050505" } },
+                new Setting { Key = "theme_text", Label = "Text color", Values = new[] { "pick" }, Labels = new[] { "#F4F4F2" } },
+                new Setting { Key = "theme_save", Label = "Save your colors", Values = new[] { "save" }, Labels = new[] { "Save as preset" } },
+                new Setting { Key = "theme_reset", Label = "Default colors", Values = new[] { "reset" }, Labels = new[] { "Restore the original colors" } },
             };
             _settingEdit = new TextBox
             {
@@ -399,6 +407,7 @@ namespace OpenSmash.Launcher
                 if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Escape) { CommitEdit(); e.SuppressKeyPress = true; }
             };
             Controls.Add(_settingEdit);
+            LoadTheme();   // (Settings > Theme's colors before the first paint: LauncherForm.Theme.cs)
         }
         
         // ---------------------------------------------------------------------------
@@ -1921,6 +1930,7 @@ namespace OpenSmash.Launcher
                 scale.Values = scale.Values.Append(_iniValues["render_scale"]).ToArray();
                 scale.Labels = scale.Labels.Append(_iniValues["render_scale"]).ToArray();
             }
+            LoadTheme();   // (launcher.ini [theme]: OpenSmash.Avalonia writes it too)
             if (_changed.Count > 0) PersistSettings();   // (the official lobby of an unset file, the stale values reset)
         }
 
@@ -2018,9 +2028,17 @@ namespace OpenSmash.Launcher
             _settingEdit.SelectAll();
         }
 
+        void OpenPadsFile()
+        {
+            string pads = GameFolder.ConfigFile(_repo, "controllers.ini");
+            if (File.Exists(pads)) Process.Start(new ProcessStartInfo("notepad.exe", "\"" + pads + "\"") { UseShellExecute = true });
+            else UiLocale.Message("controllers.ini is written the first time the game starts.", "OpenSmash");
+        }
+
         // A change is written as soon as it is made, and again when the window closes.
         void WriteSetting(string key, string value)
         {
+            if (key == "theme_preset") { ApplyThemePreset(value); return; }   // (launcher.ini [theme]: LauncherForm.Theme.cs)
             // Write only on a user change: closing after a game must not overwrite its language choice.
             if (key == "ui_language")
             {
@@ -2592,6 +2610,7 @@ namespace OpenSmash.Launcher
                     {
                         var set = GetVisibleSetting(_sel);
                         if (set != null && set.Key == "remap") OpenRemap();
+                        else if (set != null && ThemeAction(set)) { }
                         else if (set != null && set.Text) BeginEdit(set);
                         else if (set == null || !set.Slider) ToggleDropdown(_sel);
                     }
@@ -2857,6 +2876,7 @@ namespace OpenSmash.Launcher
                     var set = _settings[idx];
                     if (set.Text) { BeginEdit(set); return; }
                     if (set.Key == "remap") { OpenRemap(); return; }
+                    if (ThemeAction(set)) return;
                     if (set.Slider || set.Key == "pads" || !SettingOn(set)) return;
                     var visibleIdx = GetVisibleSettings().ToList().FindIndex(s => Array.IndexOf(_settings, s) == idx);
                     ToggleDropdown(visibleIdx);
@@ -2867,13 +2887,8 @@ namespace OpenSmash.Launcher
                     var set = _settings[idx];
                     if (!SettingOn(set)) return;
                     if (set.Key == "remap") { OpenRemap(); return; }
-                    if (set.Key == "pads")
-                    {
-                        string pads = GameFolder.ConfigFile(_repo, "controllers.ini");
-                        if (File.Exists(pads)) Process.Start(new ProcessStartInfo("notepad.exe", "\"" + pads + "\"") { UseShellExecute = true });
-                        else UiLocale.Message("controllers.ini is written the first time the game starts.", "OpenSmash");
-                        return;
-                    }
+                    if (set.Key == "pads") { OpenPadsFile(); return; }
+                    if (ThemeAction(set)) return;
                     if (set.Slider) return;
                     if (set.Text) { BeginEdit(set); return; }
                     var visibleIdx = GetVisibleSettings().ToList().FindIndex(s => Array.IndexOf(_settings, s) == idx);
@@ -5218,7 +5233,7 @@ namespace OpenSmash.Launcher
             try
             {
                 await core.ExecuteScriptAsync(
-                    $"window.__osm && (window.__osm.setInstalled({installed}), window.__osm.setInventory({inventory}));");
+                    ThemeScript() + $"window.__osm && (window.__osm.setInstalled({installed}), window.__osm.setInventory({inventory}));");
             }
             catch { }
         }
