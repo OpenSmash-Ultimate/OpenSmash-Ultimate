@@ -14,7 +14,7 @@
     os_mods.py conflicts               files more than one turned-on mod changes (RESULT: conflicts)
     os_mods.py updates                 installed GameBanana mods with a newer file (RESULT: updates)
     os_mods.py hdr-install <zip|folder>   HewDraw Remix from its switch-package, already downloaded (tools/hdr.py)
-    os_mods.py hdr-download            HewDraw Remix's checked release, downloaded from GitHub and installed
+    os_mods.py hdr-download            HewDraw Remix's newest prerelease, downloaded from GitHub and installed
     os_mods.py hdr-check               a newer HDR prerelease than the one installed (RESULT: installed, latest, newer, size)
     os_mods.py hdr-update              install it (RESULT: updated, version), then apply
     os_mods.py hdr-only on|off         the launcher's HDR mode: ARCropolis' HDR workspace (HDR's folders alone) made

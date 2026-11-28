@@ -4424,13 +4424,13 @@ namespace OpenSmash.Launcher
         {
             var answer = UiLocale.Message(this,
                 UiLocale.Text("HDR (HewDraw Remix) isn't installed yet.\n\n") +
-                UiLocale.Text("Yes: pick the folder you unpacked HDR's switch-package to (it has ultimate and skyline in it).\n") +
-                UiLocale.Text("No: download HDR's release from its GitHub page (about 1.4 GB).\n\n") +
+                UiLocale.Text("Yes: download HDR's newest prerelease from its GitHub page and install it (about 1.5 GB).\n") +
+                UiLocale.Text("No: pick a folder you already unpacked HDR's switch-package to (it has ultimate and skyline in it).\n\n") +
                 UiLocale.Text("In HDR mode only HDR runs. Your other mods stay installed and come back when you pick Play."),
                 "OpenSmash", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
             if (answer == DialogResult.Cancel) return false;
             string[] args;
-            if (answer == DialogResult.Yes)
+            if (answer == DialogResult.No)
             {
                 if (!FolderPicker.Show(this, out string path, out _, "Pick the folder HDR's switch-package was unpacked to", offerLink: false)) return false;
                 args = new[] { "hdr-install", path };

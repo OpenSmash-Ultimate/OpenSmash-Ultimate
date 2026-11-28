@@ -97,7 +97,8 @@ class HdrSwitch(unittest.TestCase):
 
     def test_no_room_for_the_download(self):
         full = shutil._ntuple_diskusage(100, 100, 1 << 20)
-        with mock.patch.object(hdr.shutil, 'disk_usage', return_value=full), mock.patch.object(hdr, 'fetch') as fetch:
+        with mock.patch.object(hdr.shutil, 'disk_usage', return_value=full), mock.patch.object(hdr, 'fetch') as fetch, \
+                mock.patch.object(hdr, 'releases', side_effect=hdr.Error('offline')):
             with self.assertRaises(hdr.Error) as e:
                 hdr.download(self.tree, None, lambda s: None)
         fetch.assert_not_called()
@@ -561,3 +562,28 @@ class HdrUpdate(unittest.TestCase):
         with self.assertRaises(hdr.Error):
             hdr.apply_delta(self.tree, str(bad), 'v0.50.11-prerelease', lambda s: None)
         self.assertEqual(hdr.installed(self.tree), 'v0.50.10-prerelease')
+
+
+class HdrDownload(unittest.TestCase):
+    """hdr.download: HDR-PreReleases' newest switch-package, not the release pinned here."""
+    def test_the_newest_prerelease(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            tree = mods.Tree(str(root))
+            pkg = root / 'pkg.zip'
+            with zipfile.ZipFile(pkg, 'w') as z:
+                for m in hdr.MODS:
+                    z.writestr(f'ultimate/mods/{m}/fighter/x.bin', m)
+                z.writestr('ultimate/stage-alts/Hashes_all', 'H')
+                for p in hdr.PLUGINS:
+                    z.writestr(hdr.PLUGIN_DIR + p, b'NRO')
+            rels = [{'tag': 'v0.51.0-prerelease', 'assets': {'switch-package.zip': {'url': 'u', 'size': 10, 'sha256': None}}}]
+
+            def fetch(info, target, progress=None, log=None):
+                shutil.copyfile(pkg, target)
+            with mock.patch.object(hdr, 'fetch_asset', fetch), mock.patch.object(hdr, 'fetch') as pinned:
+                st = hdr.download(tree, None, lambda s: None, rels)
+            pinned.assert_not_called()
+            self.assertEqual(st['installed'], 'v0.51.0-prerelease')
+            self.assertTrue((root / 'mods' / 'hdr-stages' / 'fighter' / 'x.bin').is_file())

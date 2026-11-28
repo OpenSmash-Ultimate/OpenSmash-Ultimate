@@ -4,7 +4,7 @@ as a switch the Mods app turns on and off - on, it is applied with the user's ow
 
 Usage:
   hdr.py status   [--tree <dir>]     installed or not, on or off
-  hdr.py download [--tree <dir>]     download HDR's release package and install it (turned off)
+  hdr.py download [--tree <dir>]     download HDR's newest prerelease and install it (turned off)
   hdr.py install <folder|zip> [--tree <dir>]   install it from a switch-package already downloaded
                                      (the zip, or a folder it was unpacked to: a newer prerelease, say)
   hdr.py on|off   [--tree <dir>]     turn it on or off (then apply, and build plugins if asked)
@@ -180,9 +180,32 @@ def fetch(target, progress=None, log=print, tries=6):
         log("the download isn't whole; downloading it again")
 
 
-def download(tree, progress=None, log=print):
-    """Download HDR's package and install it, turned off."""
+def download(tree, progress=None, log=print, rels=None):
+    """Download HDR's newest prerelease (HDR-PreReleases' newest switch-package.zip) and install it, turned off. Its
+    releases page not answering: the release checked here (VERSION) instead."""
     os.makedirs(folder(tree), exist_ok=True)
+    try:
+        rels = releases() if rels is None else rels
+    except Error as e:
+        log(f"{e}: the release checked here, {VERSION}, instead")
+        rels = []
+    newest = next((r for r in rels if FULL_ASSET in r["assets"]), None)
+    if newest and version_key(newest["tag"]) != version_key(VERSION):
+        info = newest["assets"][FULL_ASSET]
+        target = os.path.join(folder(tree), "switch-package-" + re.sub(r"[^\w.-]", "_", newest["tag"]) + ".zip")
+        have = os.path.getsize(target) if os.path.exists(target) else 0
+        free = shutil.disk_usage(folder(tree)).free
+        if free < info["size"] - have + INSTALLED_SIZE + (1 << 30):
+            raise Error(f"not enough disk space for HDR: it needs about {(info['size'] - have + INSTALLED_SIZE) / (1 << 30):.1f} GB, "
+                        f"{free / (1 << 30):.1f} GB is free")
+        log(f"downloading HewDraw Remix {newest['tag']}, HDR's newest prerelease, from GitHub ({info['size'] / (1 << 30):.1f} GB)")
+        fetch_asset(info, target, progress, log)
+        log("unpacking")
+        stage = unpack(tree, target, (lambda f: progress(f, 1)) if progress else None)
+        place(tree, stage, {"version": newest["tag"], "sha256": info.get("sha256"), "when": time.strftime("%Y-%m-%d %H:%M")}, log)
+        os.remove(target)
+        log(f"HewDraw Remix {newest['tag']} installed")
+        return status(tree)
     target = os.path.join(folder(tree), "switch-package.zip")
     have = os.path.getsize(target) if os.path.exists(target) else 0
     free = shutil.disk_usage(folder(tree)).free
