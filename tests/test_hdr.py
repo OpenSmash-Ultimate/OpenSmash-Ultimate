@@ -16,6 +16,20 @@ import hdr  # noqa: E402
 import mods  # noqa: E402
 
 
+def arc_config(root, shown=('My Skin', 'Moveset'), workspace='Default'):
+    """ARCropolis' settings as it leaves them after a start (one user's folder), and the mods.txt it was shown."""
+    import arc_workspace as aw
+    d = root / 'dump' / 'skyline' / 'sd' / 'ultimate' / 'arcropolis' / 'config' / '1' / '2'
+    d.mkdir(parents=True, exist_ok=True)
+    (d / 'version').write_text('"4.1.1"')
+    (d / 'workspace').write_text(workspace)
+    (d / 'workspace_list').write_text('{"Default":"presets"}')
+    (d / 'presets').write_text(json.dumps(sorted(aw.mod_hash(n) for n in shown)))
+    (d / 'mod_cache').write_text(json.dumps(sorted(aw.mod_hash(n) for n in shown)))
+    (root / 'dump' / 'skyline' / 'mods.txt').write_text(''.join(n + '\n' for n in shown))
+    return d
+
+
 class HdrSwitch(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -59,13 +73,14 @@ class HdrSwitch(unittest.TestCase):
         self.assertTrue(state['mods']['My Skin']['enabled'])   # (the user's own stay as they are)
         self.assertEqual(self.plugins(), sorted(hdr.PLUGINS))
 
-    def test_off_takes_them_out_and_keeps_the_rest(self):
+    def test_off_turns_its_mods_off_and_keeps_the_rest(self):
         self.install()
         hdr.set_on(self.tree, True, lambda s: None)
         (self.root / 'skyline' / 'plugins' / 'libarcropolis.nro').write_bytes(b'NRO')
         st = hdr.set_on(self.tree, False, lambda s: None)
         self.assertFalse(st['on'])
-        self.assertEqual(self.plugins(), ['libarcropolis.nro'])
+        # (its stage plugins stay while it is installed: the plugins the game is built with don't change with it)
+        self.assertEqual(self.plugins(), sorted(['libarcropolis.nro'] + list(hdr.PLUGINS)))
         state = self.tree.load()
         self.assertFalse(any(state['mods'][m]['enabled'] for m in hdr.MODS))
         self.assertTrue(state['mods']['My Skin']['enabled'])
@@ -150,30 +165,62 @@ class HdrOnly(unittest.TestCase):
             hdr.install(self.tree, str(self.root / 'empty'), lambda s: None)
 
     def test_only_and_back(self):
+        import arc_workspace as aw
         import skyline
         self.package(self.root / 'pkg')
         hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
+        d = arc_config(self.root)
         before = self.enabled()
-        self.assertTrue(hdr.set_only(self.tree, True, lambda s: None))
-        self.assertEqual(self.enabled(), set(hdr.MODS))
+        self.assertTrue(hdr.set_only(self.tree, True, lambda s: None))   # (the first time: HDR not shown to ARCropolis yet)
+        self.assertEqual(self.enabled(), before)   # (every switch stays)
         self.assertTrue(hdr.status(self.tree)['only'])
-        # the community plugins that load: ARCropolis, Smashline and HDR's stage plugins, not the CSK Collection, One Slot
-        # Effects or the Training Modpack (still in the folder: built into the game, not listed)
-        loaded = sorted(os.path.basename(f) for _n, f in skyline.standard(str(self.root)))
-        self.assertEqual(loaded, sorted(['libarcropolis.nro', 'libsmashline_plugin.nro'] + list(hdr.PLUGINS)))
-        self.assertTrue((self.root / 'skyline' / 'plugins' / 'libtraining_modpack.nro').exists())
-        # nothing turns another mod on meanwhile (the Mods app, the game's menu: they save the switch, load keeps it off)
+        # every plugin: HDR's stage plugins among them, and its nro_hook (OpenSmash had none); its ARCropolis the same as ours
+        self.assertEqual(len(skyline.standard(str(self.root))), 8)
+        with mock.patch.object(skyline, 'cache_mod_plugins'), mock.patch.object(skyline, 'generate'), \
+                mock.patch.object(skyline, 'module_of', lambda p, src, r, pr: (os.path.basename(src),) * 2):
+            skyline.sync(str(self.root), lambda s: None)   # (what the apply does: mods.txt, then the workspaces)
+        shown = (self.root / 'dump' / 'skyline' / 'mods.txt').read_text().split()
+        self.assertEqual([x for x in shown if x.startswith('hdr')], list(hdr.MODS))
+        aw.activate(str(self.root), True)
+        self.assertEqual((d / 'workspace').read_text(), 'HDR')
+        self.assertEqual(json.loads((d / 'workspace_list').read_text()), {'Default': 'presets', 'HDR': 'hdr_preset'})
+        self.assertEqual(set(json.loads((d / 'hdr_preset').read_text())), {aw.mod_hash(m) for m in hdr.MODS})
+        self.assertEqual(set(json.loads((d / 'presets').read_text())), {aw.mod_hash(n) for n in ('My Skin', 'Moveset')})
+        self.assertTrue({aw.mod_hash(m) for m in hdr.MODS} <= set(json.loads((d / 'mod_cache').read_text())))
+        # a mod turned on meanwhile: its switch saved, in the Play workspace, not HDR's
         state = self.tree.load()
-        state['mods']['Moveset']['enabled'] = True
+        state['mods']['Off Skin']['enabled'] = True
         self.tree.save(state)
-        self.assertNotIn('Moveset', self.enabled())
+        with mock.patch.object(skyline, 'cache_mod_plugins'), mock.patch.object(skyline, 'generate'), \
+                mock.patch.object(skyline, 'module_of', lambda p, src, r, pr: (os.path.basename(src),) * 2):
+            skyline.sync(str(self.root), lambda s: None)
+        self.assertIn(aw.mod_hash('Off Skin'), json.loads((d / 'presets').read_text()))
+        self.assertNotIn(aw.mod_hash('Off Skin'), json.loads((d / 'hdr_preset').read_text()))
         self.assertFalse(hdr.set_only(self.tree, True, lambda s: None))   # (already: nothing to apply)
-        self.assertTrue(hdr.set_only(self.tree, False, lambda s: None))
-        self.assertEqual(self.enabled(), before)
-        self.assertFalse(hdr.status(self.tree)['on'])
-        self.assertEqual(len(skyline.standard(str(self.root))), 5)
+        applied = json.loads((self.root / 'dump' / 'mods' / 'applied.json').read_text())
+        self.assertEqual(applied['mods'], list(hdr.MODS))   # (online: HDR's set)
+        self.assertFalse(hdr.set_only(self.tree, False, lambda s: None))   # (no apply: the workspace switched)
+        self.assertEqual((d / 'workspace').read_text(), 'Default')
+        self.assertFalse(hdr.status(self.tree)['only'])
+        applied = json.loads((self.root / 'dump' / 'mods' / 'applied.json').read_text())
+        self.assertEqual(set(applied['mods']), {'My Skin', 'Moveset', 'Off Skin'})
+
+    def test_the_mode_from_before_the_workspaces_gives_the_switches_back(self):
+        arc_config(self.root)
+        self.package(self.root / 'pkg')
+        hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
+        state = self.tree.load()
+        state['hdr_only'] = {'enabled': {'My Skin': True, 'Moveset': True}, 'hdr_was_on': False, 'mods': list(hdr.MODS),
+                             'plugins': ['libarcropolis.nro']}
+        for n, m in state['mods'].items():
+            m['enabled'] = n in hdr.MODS
+        self.tree.save(state)
+        self.assertTrue(hdr.set_only(self.tree, True, lambda s: None))
+        self.assertEqual(self.enabled(), {'My Skin', 'Moveset'})
+        self.assertTrue(self.tree.load()['hdr_only']['workspace'])
 
     def test_only_keeps_hdr_on_after_if_it_was(self):
+        arc_config(self.root)
         self.package(self.root / 'pkg')
         hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
         hdr.set_on(self.tree, True, lambda s: None)   # (HDR with the user's mods, from the Mods app)
@@ -186,14 +233,37 @@ class HdrOnly(unittest.TestCase):
             hdr.set_only(self.tree, True, lambda s: None)
         self.assertFalse(hdr.set_only(self.tree, False, lambda s: None))
 
-    def test_os_mods_refuses_another_mod_in_hdr_mode(self):
+    def test_only_needs_arcropolis_settings(self):
+        """No settings of ARCropolis' yet (the game never started with it): no workspace to switch, so not at all."""
+        self.package(self.root / 'pkg')
+        hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
+        with self.assertRaises(hdr.Error):
+            hdr.set_only(self.tree, True, lambda s: None)
+        self.assertFalse(hdr.status(self.tree)['only'])
+        self.assertFalse(hdr.set_only(self.tree, False, lambda s: None))
+
+    def test_os_mods_switches_play_mods_in_hdr_mode(self):
         import os_mods
+        arc_config(self.root)
         self.package(self.root / 'pkg')
         hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
         hdr.set_only(self.tree, True, lambda s: None)
-        with self.assertRaises(mods.Error):
-            os_mods.set_switches(self.tree, ['Moveset'], True)
-        os_mods.set_switches(self.tree, ['hdr'], True)   # (HDR's own: fine)
+        os_mods.set_switches(self.tree, ['Off Skin'], True)   # (Play's set: HDR's workspace doesn't have it)
+        self.assertIn('Off Skin', self.enabled())
+
+    def test_a_newer_standard_plugin_in_the_package_replaces_opensmash_s(self):
+        self.package(self.root / 'pkg')
+        d = self.root / 'pkg' / 'skyline' / 'plugins'
+        (d / 'libarcropolis.nro').write_bytes(b'\0ARCropolis v4.2.0\0')
+        (d / 'libsmashline_plugin.nro').write_bytes(b'\0smashline 1.9.0\0')
+        std = self.root / 'skyline' / 'plugins'
+        (std / 'libarcropolis.nro').write_bytes(b'\0ARCropolis v4.1.1\0')
+        (std / 'libsmashline_plugin.nro').write_bytes(b'\0smashline 2.0.0\0')
+        hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
+        self.assertEqual((std / 'libarcropolis.nro').read_bytes(), b'\0ARCropolis v4.2.0\0')   # (newer: HDR's)
+        self.assertEqual((std / 'libsmashline_plugin.nro').read_bytes(), b'\0smashline 2.0.0\0')   # (older: ours)
+        hdr.remove(self.tree, lambda s: None)
+        self.assertEqual((std / 'libarcropolis.nro').read_bytes(), b'\0ARCropolis v4.1.1\0')   # (ours back)
 
 
 class HdrMotion(unittest.TestCase):
@@ -253,6 +323,7 @@ attack_air_lw:
         wait = dict(m(), game_script=h('game_wait'), animations=[(h('a00wait1.nuanmb'), 0)])
         air = dict(m(), game_script=h('game_attackairlw'), flags=0x80, animations=[(h('c05attackairlw.nuanmb'), 1)],
                    scripts=[h('effect_attackairlw'), h('sound_attackairlw')], extra=(0, 0, 54, False))
+        arc_config(self.root, ('My Skin',))
         self.vanilla = hdr_motion.write(h('fighter/ridley/motion/body'), {h('wait'): wait, h('attack_air_lw'): air})
         self.asked = []
 
@@ -301,22 +372,22 @@ attack_air_lw:
         self.assertEqual(sorted(os.listdir(lists)), [f'c{i:02d}' for i in range(8)])
         _p, motions = self.hm.read((lists / 'c03' / 'motion_list.bin').read_bytes())
         self.assertIn(self.hm.hash40('special_air_lw_pogo'), motions)
-        self.assertEqual(self.enabled(), set(hdr.MODS) | {'hdr-motion'})   # (HDR only allows it too)
         self.assertEqual(self.tree.load()['order'][:4], list(hdr.MODS) + ['hdr-motion'])   # (after HDR's: it wins)
+        self.assertIn('hdr-motion', mods.hdr_seen(self.tree))   # (shown to ARCropolis with HDR's, in its workspace)
         self.assertFalse(hdr.bake_motion(self.tree, lambda s: None))   # (as it is: not written again)
         n = len(self.asked)
         y = self.root / 'mods' / 'hdr' / 'fighter' / 'ridley' / 'motion' / 'body' / 'motion_patch.yaml'
         y.write_text(self.PATCH + "fall:\n  blend_frames: 3\n")
         self.assertTrue(hdr.bake_motion(self.tree, lambda s: None))   # (HDR updated: again)
         self.assertGreater(len(self.asked), n)
-        self.assertTrue(hdr.set_only(self.tree, False, lambda s: None))
+        self.assertFalse(hdr.set_only(self.tree, False, lambda s: None))
         self.assertNotIn('hdr-motion', self.enabled())   # (Play: off with HDR's mods)
 
     def test_already_in_hdr_mode_before_this(self):
         """HDR mode switched on by an OpenSmash without hdr_motion.py: hdr-only on writes the lists and allows them."""
         import os_mods
         state = self.tree.load()
-        state['hdr_only'] = {'enabled': {}, 'hdr_was_on': False, 'mods': list(hdr.MODS), 'plugins': list(hdr.ONLY_PLUGINS)}
+        state['hdr_only'] = {'enabled': {}, 'hdr_was_on': False, 'mods': list(hdr.MODS), 'plugins': ['libarcropolis.nro']}
         for m in hdr.MODS:
             state['mods'][m]['enabled'] = True
         self.tree.save(state)
@@ -324,8 +395,49 @@ attack_air_lw:
                 mock.patch.object(sys, 'stdout'):
             os_mods.main(['os_mods.py', 'hdr-only', 'on'])
         self.assertTrue(applied.called)
-        self.assertIn('hdr-motion', self.enabled())
+        self.assertIn('hdr-motion', mods.hdr_seen(self.tree))
+        self.assertTrue(self.tree.load()['hdr_only']['workspace'])
 
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ArcWorkspace(unittest.TestCase):
+    """tools/arc_workspace.py: the hashes as smash-arc's hash40, and the folder names as the runtime shows them."""
+    def test_hash40(self):
+        import arc_workspace as aw
+        self.assertEqual(aw.hash40('motion'), (6 << 32) | __import__('zlib').crc32(b'motion'))
+        self.assertEqual(aw.flat('Pack/(Moveset) X'), 'Pack - (Moveset) X')
+        self.assertEqual(aw.flat('.hdr-shares'), 'WindowSmash hdr-shares')
+
+    def test_hands_off_a_cache_it_cannot_read(self):
+        import arc_workspace as aw
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / 'dump' / 'skyline' / 'sd' / 'ultimate' / 'arcropolis' / 'config' / '1' / '2'
+            d.mkdir(parents=True)
+            (d / 'version').write_text('x')
+            (d / 'workspace_list').write_text('{"Default":"presets"}')
+            (d / 'mod_cache').write_text('[1, 2, 3]')
+            self.assertEqual(aw.prepare(t, ['hdr'], ['hdr', 'My Skin'], False, lambda s: None), [])
+            self.assertFalse((d / 'hdr_preset').exists())
+
+    def test_the_spelling_the_cache_holds_is_used(self):
+        import arc_workspace as aw
+        form = aw.FORMS[1]
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / 'dump' / 'skyline' / 'sd' / 'ultimate' / 'arcropolis' / 'config' / '1' / '2'
+            d.mkdir(parents=True)
+            (d / 'version').write_text('x')
+            (d / 'workspace').write_text('Default')
+            (d / 'workspace_list').write_text('{"Default":"presets"}')
+            (d / 'presets').write_text(json.dumps([aw.mod_hash('My Skin', form), aw.mod_hash('hdr', form)]))
+            (d / 'mod_cache').write_text(json.dumps([aw.mod_hash('My Skin', form)]))
+            self.assertTrue(aw.ready(t, ['My Skin']))
+            self.assertEqual(len(aw.prepare(t, ['hdr'], ['hdr', 'My Skin', 'New'], False, lambda s: None)), 1)
+            self.assertEqual(json.loads((d / 'hdr_preset').read_text()), [aw.mod_hash('hdr', form)])
+            self.assertEqual(set(json.loads((d / 'presets').read_text())), {aw.mod_hash(n, form) for n in ('My Skin', 'New')})
+            self.assertTrue(aw.activate(t, True))
+            self.assertEqual((d / 'workspace').read_text(), 'HDR')
+            self.assertTrue(aw.activate(t, False))
+            self.assertEqual((d / 'workspace').read_text(), 'Default')

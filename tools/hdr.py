@@ -8,8 +8,8 @@ Usage:
   hdr.py install <folder|zip> [--tree <dir>]   install it from a switch-package already downloaded
                                      (the zip, or a folder it was unpacked to: a newer prerelease, say)
   hdr.py on|off   [--tree <dir>]     turn it on or off (then apply, and build plugins if asked)
-  hdr.py only on|off [--tree <dir>]  HDR only (the launcher's HDR mode): HDR on, every other mod and community
-                                     plugin off; off gives back what was on before
+  hdr.py only on|off [--tree <dir>]  the launcher's HDR mode: ARCropolis' HDR workspace made active, or the one
+                                     before it again
   hdr.py motion   [--tree <dir>]     write HDR's motion lists again (mods/hdr-motion: tools/hdr_motion.py), then apply
   hdr.py remove   [--tree <dir>]     delete it
 
@@ -17,26 +17,28 @@ The package is what a Switch's SD card takes. Of it: ultimate/mods/hdr, hdr-asse
 in as mods (by those names: HDR reads its own folders), first in the order so the user's mods win
 where both change a file; ultimate/stage-alts goes on the plugins' SD card (dump/skyline/sd); its stage
 plugins (stage_config, stage_alts) are kept in dump/hdr/plugins and put among the standard plugins
-(skyline/plugins) while HDR is on. The package's ARCropolis, Smashline and nro_hook are the standard
-plugins' own builds (std_plugins.py), and hdr-launcher (the console's updater) isn't used: left out.
+(skyline/plugins) once it is installed. The package's ARCropolis, Smashline and nro_hook are left out unless newer
+than the standard plugins' (std_plugins.py), and hdr-launcher (the console's updater) isn't used: left out.
 HDR's motion_patch.yaml files (new moves, changed frame data) are applied to the game's motion lists when it is
 turned on (tools/hdr_motion.py, into the mods folder hdr-motion, switched with HDR's): on the console its plugin
 does that as the lists load, which doesn't happen here - without it Ridley's aerial down special, Dark Samus'
 up special and HDR's other new moves T-posed.
 HDR isn't shipped with OpenSmash: each user downloads it from HDR's releases.
 
-HDR only (the launcher's third mode, beside Play and Vanilla): HDR changes every fighter, and a moveset
-mod on top of it (or a community plugin it doesn't expect) can crash the game or, online, play a
-different match than the other players' games. So in this mode HDR's own mods are the only ones on and
-HDR's plugins the only community ones loaded: mods.json's "hdr_only" keeps what was on before (each
-mod's switch), mods.Tree.load turns every other mod off whatever its switch says while it is there -
-the Mods app, the game's settings menu, an import: none of them turns one on - and skyline.standard
-lists only ONLY_PLUGINS of the community plugins (the others stay built into the game, not loaded).
-Leaving it puts every switch back as it was."""
+HDR mode (the launcher's third mode, beside Play and Vanilla): HDR changes every fighter, and a moveset mod on top
+of it can crash the game or, online, play a different match than the other players' games. So in this mode HDR's
+folders are the only ones ARCropolis loads: once HDR is installed they are always among the folders it is shown
+(mods.seen), and ARCropolis' workspace "HDR" holds them alone (tools/arc_workspace.py) - the console's way, its own
+menu's ARCropolis > Workspaces. The launcher's HDR mode makes that workspace the active one, Play the one before it:
+every mod's switch, and every plugin the game is built with, stays as it is, so the switch needs no apply and no
+build (HDR's stage plugins are among the standard ones for good once it is installed; the moveset mods' plugins come
+through ARCropolis, from the workspace's mods only). mods.json's "hdr_only" ({"workspace": true}) marks the mode.
+The package's ARCropolis, Smashline and nro_hook replace OpenSmash's only when newer (newer_standard)."""
 import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import ssl
 import sys
@@ -65,7 +67,7 @@ SD = ("ultimate/stage-alts/",)   # (the package's paths that go on the plugins' 
 PLUGIN_DIRS = (PLUGIN_DIR, "skyline/plugins/")
 # HDR only: the community plugins (skyline/plugins) that still load - ARCropolis reads HDR's files, Smashline
 # runs its fighters' code, nro_hook tells it of their modules - and HDR's stage plugins (PLUGINS)
-ONLY_PLUGINS = ("libarcropolis.nro", "libsmashline_plugin.nro", "libnro_hook.nro") + PLUGINS
+
 # HDR's motion_patch.yaml files applied ahead of time (tools/hdr_motion.py): a mods folder written here, right
 # after HDR's three in the order and on exactly when they are. Without it HDR's new moves T-pose
 MOTION = hdr_motion.FOLDER
@@ -198,7 +200,7 @@ def download(tree, progress=None, log=print):
 def wanted(name):
     """A package file OpenSmash takes: HDR's three mods, the stage-alts list, its two stage plugins."""
     return (any(name.startswith(f"ultimate/mods/{m}/") for m in MODS) or name.startswith(SD)
-            or any(name == d + p for d in PLUGIN_DIRS for p in PLUGINS))
+            or any(name == d + p for d in PLUGIN_DIRS for p in PLUGINS + tuple(std_plugins.PLUGINS)))
 
 
 def unpack(tree, package, progress=None):
@@ -280,9 +282,93 @@ def place(tree, stage, record, log=print):
         raise Error("HDR's package has no " + " or ".join(PLUGINS) + ": not the layout OpenSmash knows")
     shutil.move(found, keep)
     shutil.rmtree(stage, ignore_errors=True)
+    newer_standard(tree, keep, log)
     with open(os.path.join(folder(tree), "installed.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=1)
     set_on(tree, was_on, log)
+
+
+# Where a standard plugin keeps its version (its name, then the version): how the package's copy is told newer or not
+VERSION_MARKS = {"libarcropolis.nro": (b"arcropolis",), "libsmashline_plugin.nro": (b"smashline",),
+                 "libnro_hook.nro": (b"nro_hook", b"nro-hook", b"nro hook")}
+
+
+def _version(text):
+    try:
+        return tuple(int(x) for x in re.findall(r"\d+", text)[:3])
+    except ValueError:
+        return ()
+
+
+def nro_version(data, name):
+    """The version a plugin names itself with (e.g. "ARCropolis v4.1.1"), or () when it names none."""
+    best = ()
+    for mark in VERSION_MARKS.get(name, ()):
+        for m in re.finditer(re.escape(mark) + rb"[ _\-/:]{0,3}v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])", data, re.I):
+            best = max(best, tuple(int(g) for g in m.groups()))
+    return best
+
+
+def newer_standard(tree, keep, log=print):
+    """The package's copies of OpenSmash's standard plugins (ARCropolis, Smashline, nro_hook): one that is a newer
+    version than OpenSmash's replaces it (OpenSmash's kept in dump/hdr/replaced, put back when HDR is removed); the
+    same or older stays out - OpenSmash's own runs. Whether one was put in."""
+    std = std_plugins.folder(tree.root)
+    put = False
+    for name in sorted(std_plugins.PLUGINS):
+        theirs = os.path.join(keep, name)
+        if not os.path.isfile(theirs):
+            continue
+        ours = os.path.join(std, name)
+        with open(theirs, "rb") as f:
+            data = f.read()
+        mine = b""
+        if os.path.isfile(ours):
+            with open(ours, "rb") as f:
+                mine = f.read()
+        if data == mine:
+            log(f"HDR's {name}: the same as OpenSmash's")
+            continue
+        new, old = nro_version(data, name), (nro_version(mine, name) if mine else ()) or _version(std_plugins.PLUGINS[name][0])
+        if mine and not (new and old and new > old):
+            log(f"HDR's {name} ({'.'.join(map(str, new)) or 'no version in it'}): not newer than OpenSmash's "
+                f"({'.'.join(map(str, old)) or '?'}): OpenSmash's kept")
+            continue
+        backup = os.path.join(folder(tree), "replaced")
+        if mine and not os.path.isfile(os.path.join(backup, name)):
+            os.makedirs(backup, exist_ok=True)
+            shutil.copyfile(ours, os.path.join(backup, name))
+        os.makedirs(std, exist_ok=True)
+        shutil.copyfile(theirs, ours)
+        put = True
+        log(f"HDR's {name} {'.'.join(map(str, new))}: newer than OpenSmash's ({'.'.join(map(str, old)) or 'none'}): put in its place")
+    for name in std_plugins.PLUGINS:   # (only HDR's stage plugins are kept with it)
+        if os.path.isfile(os.path.join(keep, name)):
+            os.remove(os.path.join(keep, name))
+    return put
+
+
+def stage_plugins(tree):
+    """HDR's stage plugins among the standard ones - always, once it is installed: the plugins the game is built with
+    then stay the same in Play and HDR mode, so switching needs no build. Whether one was copied."""
+    plugins = std_plugins.folder(tree.root)
+    os.makedirs(plugins, exist_ok=True)
+    copied = False
+    for p in PLUGINS:
+        src, dest = os.path.join(folder(tree), "plugins", p), os.path.join(plugins, p)
+        if not os.path.isfile(src):
+            continue
+        with open(src, "rb") as f:
+            want = f.read()
+        try:
+            with open(dest, "rb") as f:
+                same = f.read() == want
+        except OSError:
+            same = False
+        if not same:
+            shutil.copyfile(src, dest)
+            copied = True
+    return copied
 
 
 def set_on(tree, on, log=print):
@@ -301,48 +387,81 @@ def set_on(tree, on, log=print):
             state["mods"][m].setdefault("title", "HewDraw Remix" if m in MODS else "HewDraw Remix (motion lists)")
     state["order"] = [m for m in own if m in state["mods"]] + [n for n in state["order"] if n not in own]
     tree.save(state)
-    plugins = std_plugins.folder(tree.root)
-    os.makedirs(plugins, exist_ok=True)
-    for p in PLUGINS:
-        dest = os.path.join(plugins, p)
-        if on:
-            shutil.copyfile(os.path.join(folder(tree), "plugins", p), dest)
-        elif os.path.exists(dest):
-            os.remove(dest)
+    if installed(tree):
+        stage_plugins(tree)
     log(f"HewDraw Remix turned {'on' if on else 'off'}")
     return status(tree)
 
 
-def set_only(tree, on, log=print):
-    """HDR only (the launcher's HDR mode), on or off. On: what each mod's switch was (and whether HDR was on)
-    kept in mods.json's "hdr_only", HDR turned on and every other mod off - mods.Tree.load keeps them off while
-    it is there, and skyline.standard loads only ONLY_PLUGINS of the community plugins. Off: every switch as
-    it was. Returns whether anything changed (an apply is then due)."""
-    state = tree.load()
-    if bool(state.get("hdr_only")) == bool(on):
-        return False
-    if on:
-        if not installed(tree):
-            raise Error("HDR isn't installed")
-        kept = {n: bool(m.get("enabled")) for n, m in state["mods"].items()}
-        set_on(tree, True, log)
-        state = tree.load()
-        own = own_mods(tree)
-        state["hdr_only"] = {"enabled": kept, "hdr_was_on": all(kept.get(m) for m in MODS), "mods": list(own),
-                             "plugins": list(ONLY_PLUGINS)}
-        for n, m in state["mods"].items():
-            m["enabled"] = n in own
-        tree.save(state)
-        log("HDR only: HewDraw Remix on, every other mod and community plugin off")
-        return True
+def _restore_legacy(tree, state, log):
+    """mods.json's "hdr_only" as it was before the workspaces (every other mod's switch turned off, kept there): the
+    switches as they were."""
     saved = state.pop("hdr_only")
     for n, m in state["mods"].items():   # (a mod installed meanwhile: off, as a new one is)
         m["enabled"] = bool(saved.get("enabled", {}).get(n, False))
     tree.save(state)
     if installed(tree):
         set_on(tree, bool(saved.get("hdr_was_on")), log)
-    log("HDR only: off, the mods as they were")
-    return True
+    log("HDR mode as it was before ARCropolis' workspaces: every mod's switch put back")
+    return tree.load()
+
+
+def _shown(tree):
+    """The mods folders ARCropolis is shown now (dump/skyline/mods.txt's lines)."""
+    try:
+        with open(os.path.join(tree.root, "dump", "skyline", "mods.txt"), encoding="utf-8") as f:
+            return [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        return None
+
+
+def set_only(tree, on, log=print):
+    """The launcher's HDR mode, on or off: ARCropolis' "HDR" workspace (HDR's folders alone, tools/arc_workspace.py)
+    made the active one, or the one before it again - every mod's switch stays as it is, and so do the plugins the
+    game is built with, so neither an apply nor a build is due. mods.json's "hdr_only" ({"workspace": true}) marks
+    the mode (the launcher reads it; the online mod set is HDR's then, mods.write_applied). Returns whether an apply
+    is due after all: the first time (HDR's folders not shown to ARCropolis yet) or once HDR's files changed."""
+    import arc_workspace
+    state = tree.load()
+    only = state.get("hdr_only")
+    need = False
+    if isinstance(only, dict) and not only.get("workspace"):
+        state = _restore_legacy(tree, state, log)
+        need = True
+    if on:
+        if not installed(tree):
+            raise Error("HDR isn't installed")
+        shown = _shown(tree) or []
+        hdr_roots = set(own_mods(tree)) | {mods.HDR_SHARES}
+        if not arc_workspace.ready(tree.root, [r for r in shown if r.split("/")[0] not in hdr_roots]):
+            raise Error("HDR mode is an ARCropolis workspace, and ARCropolis has no settings to keep one in yet (or ones "
+                        "OpenSmash can't read): start the game once with Play, then pick HDR")
+        need = bool(bake_motion(tree, log)) or need
+        need = stage_plugins(tree) or need
+        state = tree.load()
+        state["hdr_only"] = {"workspace": True, "mods": list(own_mods(tree))}
+        tree.save(state)
+        shown = _shown(tree)
+        need = need or shown is None or not all(m in {x.split("/")[0] for x in shown} for m in own_mods(tree))
+        if not need:
+            arc_workspace.update(tree, shown, state, log)
+        if not arc_workspace.activate(tree.root, True, log) and not arc_workspace.active_is(tree.root, arc_workspace.WORKSPACE):
+            if need:
+                log("ARCropolis' HDR workspace is made as the mods are applied: it is made the active one then")
+            else:
+                log("ARCropolis has no HDR workspace yet (no settings of its own until the game first starts with it): "
+                    "start the game once in Play mode, then pick HDR")
+        log("HDR mode: ARCropolis' HDR workspace - HewDraw Remix alone; every other mod stays switched as it was")
+    else:
+        if isinstance(state.get("hdr_only"), dict):
+            state.pop("hdr_only")
+            tree.save(state)
+        arc_workspace.activate(tree.root, False, log)
+        log("HDR mode: off - ARCropolis' workspace from before it")
+    if not need:
+        on_now = [n for n in state["order"] if state["mods"].get(n, {}).get("enabled")]
+        mods.write_applied(tree, tree.load(), on_now)
+    return need
 
 
 def remove(tree, log=print):
@@ -358,6 +477,11 @@ def remove(tree, log=print):
         dest = os.path.join(std_plugins.folder(tree.root), p)
         if os.path.exists(dest):
             os.remove(dest)
+    replaced = os.path.join(folder(tree), "replaced")   # (OpenSmash's standard plugins HDR's newer ones replaced)
+    for name in (os.listdir(replaced) if os.path.isdir(replaced) else ()):
+        shutil.copyfile(os.path.join(replaced, name), os.path.join(std_plugins.folder(tree.root), name))
+        log(f"{name}: OpenSmash's own put back")
+    shutil.rmtree(os.path.join(tree.mods, mods.HDR_SHARES), ignore_errors=True)
     shutil.rmtree(folder(tree), ignore_errors=True)
     tree.save(tree.load())
     log("HewDraw Remix removed")
@@ -383,7 +507,10 @@ def main():
         elif a.command == "only":
             if a.what not in ("on", "off"):
                 raise Error("only on|off")
-            set_only(tree, a.what == "on")
+            if set_only(tree, a.what == "on"):
+                mods.apply(tree)
+                import arc_workspace
+                arc_workspace.activate(tree.root, a.what == "on")
             out = status(tree)
         elif a.command in ("on", "off"):
             out = set_on(tree, a.command == "on")

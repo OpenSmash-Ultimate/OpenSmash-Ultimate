@@ -4333,8 +4333,9 @@ namespace OpenSmash.Launcher
 
         // ---------------------------------------------------------------------------
         // HDR mode (the third launch mode: < PLAY | VANILLA | HDR >). HewDraw Remix changes every fighter, so it runs
-        // alone: its own mods and plugins on, every other mod and community plugin off (tools/hdr.py set_only), and
-        // leaving it (Play or Vanilla) gives back every switch as it was. Not installed yet: from the switch-package
+        // alone: ARCropolis' "HDR" workspace, HDR's folders only, is made the active one (tools/hdr.py set_only,
+        // tools/arc_workspace.py) - every mod's switch and every plugin stays as it is, so nothing is applied or built -
+        // and leaving it (Play or Vanilla) makes the workspace from before active again. Not installed yet: from the switch-package
         // the player downloaded (a folder it was unpacked to) or, failing that, HDR's checked release from GitHub.
         string ModsJsonPath => Path.Combine(_repo, "mods", "mods.json");
         bool HdrInstalled => File.Exists(Path.Combine(_repo, "dump", "hdr", "installed.json")) && Directory.Exists(Path.Combine(_repo, "mods", "hdr"));
@@ -4360,7 +4361,7 @@ namespace OpenSmash.Launcher
                 if (want && !HdrInstalled && !await InstallHdr()) return false;
                 SetLoad(want ? "PREPARING HDR" : "LEAVING HDR", -1);
                 await Task.Run(() => OsMods(new[] { "hdr-only", want ? "on" : "off" }));
-                _modsModded = !want;   // (off: applied with the mods as they were; on: HDR's applied, Play applies again)
+                _modsModded = true;   // (an ARCropolis workspace switched: nothing to apply; hdr-only applies when it must)
                 return true;
             }
             catch (Exception ex)
@@ -4377,7 +4378,7 @@ namespace OpenSmash.Launcher
                 UiLocale.Text("HDR (HewDraw Remix) isn't installed yet.\n\n") +
                 UiLocale.Text("Yes: pick the folder you unpacked HDR's switch-package to (it has ultimate and skyline in it).\n") +
                 UiLocale.Text("No: download HDR's release from its GitHub page (about 1.4 GB).\n\n") +
-                UiLocale.Text("In HDR mode only HDR and its plugins run. Your other mods stay installed and come back when you pick Play."),
+                UiLocale.Text("In HDR mode only HDR runs. Your other mods stay installed and come back when you pick Play."),
                 "OpenSmash", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
             if (answer == DialogResult.Cancel) return false;
             string[] args;

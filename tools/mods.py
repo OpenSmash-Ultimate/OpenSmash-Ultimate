@@ -181,7 +181,8 @@ class Tree:
             state["mods"].setdefault(n, {"enabled": False})
         state["mods"] = {n: m for n, m in state["mods"].items() if n in present}
         only = state.get("hdr_only")
-        if isinstance(only, dict):   # (HDR only, tools/hdr.py set_only: its mods the only ones on, whatever turned another on)
+        if isinstance(only, dict) and not only.get("workspace"):   # (HDR only as it was before ARCropolis' workspaces: its
+            # mods the only ones on, whatever turned another on; now the switches stay and ARCropolis picks: arc_workspace.py)
             allowed = set(only.get("mods") or ())
             for n, m in state["mods"].items():
                 if n not in allowed:
@@ -2069,15 +2070,18 @@ def apply(tree, log=print):
         # the real ARCropolis is among the standard plugins: it reads the turned-on mods from
         # sd:/ultimate/mods (runtime/hle_fs.c) as the game loads, so the game keeps its own data
         characters_mod(tree, log)
-        hide_shadowed_sources(tree, on, log)
+        hide_shadowed_sources(tree, seen(tree, state), log)
         missing_shares(tree, on, log)
+        hdr = hdr_seen(tree)
+        shutil.rmtree(os.path.join(tree.mods, HDR_SHARES), ignore_errors=True)
+        if hdr:   # (HDR's workspace has HDR's folders only: the costumes they list without shipping get a folder of their own)
+            missing_shares(tree, list(hdr), log, HDR_SHARES)
         select_screen_arcropolis(tree, on, log)
         sync_plugins(tree, log)
         shutil.copyfile(tree.vanilla_cfg, tree.cfg)
-        os.makedirs(tree.work, exist_ok=True)
-        with open(os.path.join(tree.work, "applied.json"), "w", encoding="utf-8") as f:
-            json.dump({"mods": on, "files": 0, "skipped": {}, "arcropolis": True}, f)
-        log(f"{len(on)} mod(s) on: ARCropolis loads them as the game runs (the game's own data stays as it is)")
+        write_applied(tree, state, on)
+        log(f"{len(on)} mod(s) on: ARCropolis loads them as the game runs (the game's own data stays as it is)"
+            + (" - HDR mode: ARCropolis' HDR workspace, HewDraw Remix alone" if hdr_mode(state) else ""))
         return {"mods": on, "files": 0, "skipped": {}}
     if not on:
         sync_plugins(tree, log)
@@ -2143,6 +2147,41 @@ def plugin_file_callbacks(tree, table, log):
 
 
 CHARACTERS = ".characters"   # (mods/.characters: the plugins' new characters as a mod ARCropolis loads last)
+# HewDraw Remix's folders (tools/hdr.py: its three and the motion lists written for them). Once it is installed they are
+# always among the folders ARCropolis sees, whatever their switches say: the launcher's HDR mode is an ARCropolis
+# workspace of their own (tools/arc_workspace.py), so it changes nothing here and needs no apply or build
+HDR_FOLDERS = ("hdr", "hdr-assets", "hdr-stages", "hdr-motion")
+HDR_SHARES = ".hdr-shares"   # (missing_shares for HDR's folders alone: in HDR's workspace, where .characters isn't)
+
+
+def hdr_seen(tree):
+    """HDR's folders there are (HDR_FOLDERS), when it is installed (dump/hdr/installed.json); else ()."""
+    if not os.path.isfile(os.path.join(tree.root, "dump", "hdr", "installed.json")):
+        return ()
+    return tuple(m for m in HDR_FOLDERS if os.path.isdir(os.path.join(tree.mods, m)))
+
+
+def seen(tree, state):
+    """The mods folders ARCropolis is shown (dump/skyline/mods.txt), in order: the turned-on ones and HDR's."""
+    always = set(hdr_seen(tree))
+    return [n for n in state["order"] if n in always or state["mods"].get(n, {}).get("enabled")]
+
+
+def hdr_mode(state):
+    """The launcher's HDR mode is on (ARCropolis' HDR workspace the active one): mods.json's marker."""
+    only = state.get("hdr_only")
+    return isinstance(only, dict) and bool(only.get("workspace"))
+
+
+def online_mods(tree, state, on):
+    """The mods the game plays with, for applied.json (the online mod set, runtime/net_relay.c): HDR's in HDR mode."""
+    return list(hdr_seen(tree)) if hdr_mode(state) else on
+
+
+def write_applied(tree, state, on):
+    os.makedirs(tree.work, exist_ok=True)
+    with open(os.path.join(tree.work, "applied.json"), "w", encoding="utf-8") as f:
+        json.dump({"mods": online_mods(tree, state, on), "files": 0, "skipped": {}, "arcropolis": True}, f)
 
 
 def characters_mod(tree, log):
@@ -2387,7 +2426,7 @@ def select_screen_arcropolis(tree, on, log):
 SLOT = re.compile(r"/c(\d{2,3})/")
 
 
-def missing_shares(tree, on, log):
+def missing_shares(tree, on, log, into=CHARACTERS):
     """With the real ARCropolis: files a mod's config.json lists as a new costume's (new-dir-files) that
     the mod doesn't ship and nothing shares to it (Sans' c120 lists Palutena's wings and portal and
     ships neither: their weapons' set-up then reads a model that never loaded, a crash). Each is shared
@@ -2421,7 +2460,7 @@ def missing_shares(tree, on, log):
         close_image(image)
     if not found:
         return
-    folder = os.path.join(tree.mods, CHARACTERS)
+    folder = os.path.join(tree.mods, into)
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "config.json"), "w", encoding="utf-8") as f:
         json.dump({"share-to-vanilla": {s: t for s, t in shares.items() if t}}, f, indent=1)

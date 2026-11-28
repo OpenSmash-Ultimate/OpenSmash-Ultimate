@@ -15,8 +15,9 @@
     os_mods.py updates                 installed GameBanana mods with a newer file (RESULT: updates)
     os_mods.py hdr-install <zip|folder>   HewDraw Remix from its switch-package, already downloaded (tools/hdr.py)
     os_mods.py hdr-download            HewDraw Remix's checked release, downloaded from GitHub and installed
-    os_mods.py hdr-only on|off         the launcher's HDR mode: HDR on, every other mod and community plugin off;
-                                       off gives back what was on (RESULT: changed; applied when it changed)
+    os_mods.py hdr-only on|off         the launcher's HDR mode: ARCropolis' HDR workspace (HDR's folders alone) made
+                                       the active one, or the one before it again (tools/arc_workspace.py); the
+                                       switches and plugins stay as they are (RESULT: changed: applied the first time)
     os_mods.py export-list <file>      the installed mods, to share (mods.py export-list)
     os_mods.py import-list <file>      install a shared list's mods from GameBanana (RESULT: installed,
                                        already, missing)
@@ -85,7 +86,7 @@ def set_switches(tree, names, on):
             continue
         if name not in state["mods"]:
             raise mods.Error(f"no mod called {name}")
-        if on and isinstance(only, dict) and name not in (only.get("mods") or ()):   # (HDR only: mods.Tree.load keeps it off anyway)
+        if on and isinstance(only, dict) and not only.get("workspace") and name not in (only.get("mods") or ()):   # (HDR only: mods.Tree.load keeps it off anyway)
             raise mods.Error(f"{name}: HDR mode runs HDR's mods only. Pick Play in the launcher to play with your mods")
         changed |= bool(state["mods"][name].get("enabled")) != bool(on)
         state["mods"][name]["enabled"] = bool(on)
@@ -372,11 +373,12 @@ def main(argv):
         if cmd == "hdr-only":
             if len(argv) < 3 or argv[2] not in ("on", "off"):
                 raise mods.Error("hdr-only on|off")
-            changed = hdr.set_only(tree, argv[2] == "on", log)
-            if argv[2] == "on":   # (HDR mode already on: its motion lists written if they're missing or out of date)
-                changed = bool(hdr.bake_motion(tree, log)) or changed
-            if changed:
+            changed = hdr.set_only(tree, argv[2] == "on", log)   # (ARCropolis' workspace switched: tools/arc_workspace.py)
+            if changed:   # (the first time, or HDR's files changed: shown to ARCropolis, then its workspace made active)
+                normalize_picks(tree)
                 mods.apply(tree, log)
+                import arc_workspace
+                arc_workspace.activate(tree.root, argv[2] == "on", log)
             return result(True, changed=changed)
         if cmd == "install":
             if len(argv) < 3:
