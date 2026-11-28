@@ -14,6 +14,7 @@ Usage:
   hdr.py update   [--tree <dir>]     install it (its upgrade package over the release before it, else the whole package)
   hdr.py motion   [--tree <dir>]     write HDR's motion lists again (mods/hdr-motion: tools/hdr_motion.py), then apply
   hdr.py remove   [--tree <dir>]     delete it
+  hdr.py quickplay on|off [--tree <dir>]  HDR's online pop-up's Smash starting Quickplay (tools/hdr_menu.py), or as HDR made it
 
 The package is what a Switch's SD card takes. Of it: ultimate/mods/hdr, hdr-assets and hdr-stages go
 in as mods (by those names: HDR reads its own folders), first in the order so the user's mods win
@@ -37,6 +38,7 @@ build (HDR's stage plugins are among the standard ones for good once it is insta
 through ARCropolis, from the workspace's mods only). mods.json's "hdr_only" ({"workspace": true}) marks the mode.
 The package's ARCropolis, Smashline and nro_hook replace OpenSmash's only when newer (newer_standard)."""
 import argparse
+from struct import error as struct_error
 import hashlib
 import json
 import os
@@ -123,6 +125,17 @@ def bake_motion(tree, log=print, force=False):
     state["order"] = [m for m in own if m in state["mods"]] + [n for n in state["order"] if n not in own]
     tree.save(state)
     return True
+
+
+def quickplay(tree, log=print):
+    """HDR's online pop-up's Smash starting Quickplay (tools/hdr_menu.py), at HDR mode, an install and an update (an
+    update brings HDR's own file back). A file it doesn't know: left as HDR made it, and said."""
+    import hdr_menu
+    try:
+        return hdr_menu.apply(tree.root, tree.mods, log)
+    except (hdr_menu.Error, OSError, ValueError, struct_error) as e:
+        log(f"HDR's online pop-up left as HDR made it (no Quickplay): {e}")
+        return False
 
 
 def status(tree):
@@ -310,6 +323,7 @@ def place(tree, stage, record, log=print):
     newer_standard(tree, keep, log)
     with open(os.path.join(folder(tree), "installed.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=1)
+    quickplay(tree, log)
     set_on(tree, was_on, log)
 
 
@@ -475,6 +489,7 @@ def set_only(tree, on, log=print):
             raise Error("HDR mode is an ARCropolis workspace, and ARCropolis has no settings to keep one in yet (or ones "
                         "OpenSmash can't read): start the game once with Play, then pick HDR")
         need = bool(bake_motion(tree, log)) or need
+        quickplay(tree, log)
         need = stage_plugins(tree) or need
         state = tree.load()
         state["hdr_only"] = {"workspace": True, "mods": list(own_mods(tree))}
@@ -787,6 +802,7 @@ def update(tree, progress=None, log=print, rels=None):
         place(tree, stage, record, log)
     os.remove(target)
     bake_motion(tree, log)   # (its motion patches: written again if they changed)
+    quickplay(tree, log)     # (an update's menu files are HDR's own again)
     log(f"HewDraw Remix {record['version']} installed")
     return True
 
@@ -794,8 +810,8 @@ def update(tree, progress=None, log=print, rels=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("command", choices=("status", "download", "install", "on", "off", "only", "motion", "check", "update",
-                                        "remove"))
-    ap.add_argument("what", nargs="?", help="install: the package (zip or folder); only: on or off")
+                                        "remove", "quickplay"))
+    ap.add_argument("what", nargs="?", help="install: the package (zip or folder); only, quickplay: on or off")
     ap.add_argument("--tree", default=os.path.dirname(HERE))
     a = ap.parse_args()
     tree = mods.Tree(a.tree)
@@ -815,6 +831,15 @@ def main():
                 mods.apply(tree)
                 import arc_workspace
                 arc_workspace.activate(tree.root, a.what == "on")
+            out = status(tree)
+        elif a.command == "quickplay":   # (HDR's online pop-up's Smash: Quickplay - tools/hdr_menu.py)
+            if a.what not in ("on", "off"):
+                raise Error("quickplay on|off")
+            import hdr_menu
+            if a.what == "on":
+                hdr_menu.apply(tree.root, tree.mods)
+            else:
+                hdr_menu.restore(tree.root, tree.mods)
             out = status(tree)
         elif a.command in ("on", "off"):
             out = set_on(tree, a.command == "on")

@@ -14,6 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 import hdr  # noqa: E402
+import hdr_menu  # noqa: E402
 import mods  # noqa: E402
 
 
@@ -447,9 +448,63 @@ attack_air_lw:
         self.assertTrue(self.tree.load()['hdr_only']['workspace'])
 
 
-if __name__ == '__main__':
-    unittest.main()
+class HdrQuickplayMenu(unittest.TestCase):
+    """tools/hdr_menu.py: HDR's online pop-up's Smash starts Quickplay."""
+    SCRIPT = ("local value = {}\n"
+              "    self.selector_initial_id = button.ONLINE_MELEE_ROOM\n"
+              '    self.button_table[button.ONLINE_MELEE_ROOM] = {\n        parts = "set_parts_btn_00",\n        sequence = SEQUENCE_ONLINE_MELEE_ROOM\n    }\n'
+              '    self.footer_table[button.ONLINE_MELEE_ROOM] = {\n        label = "mnu_onl_mel_top_help_room"\n    }\n')
 
+    def test_smash_starts_quickplay(self):
+        out = hdr_menu.patch_script(self.SCRIPT)
+        self.assertIn("sequence = SEQUENCE_ONLINE_MELEE_ANYONE", out)
+        self.assertNotIn("SEQUENCE_ONLINE_MELEE_ROOM", out)
+        self.assertIn('"mnu_onl_mel_top_help_any"', out)
+        self.assertIsNone(hdr_menu.patch_script(out))
+        with self.assertRaises(hdr_menu.Error):
+            hdr_menu.patch_script("local value = {}\n")
+
+    def tree(self, root, script):
+        tree = mods.Tree(root)
+        lua = Path(tree.mods, *hdr_menu.SCRIPT)
+        lua.parent.mkdir(parents=True)
+        lua.write_text(script, encoding="utf-8")
+        return tree, lua
+
+    def test_on_and_off(self):
+        with tempfile.TemporaryDirectory() as root:
+            tree, lua = self.tree(root, self.SCRIPT)
+            self.assertTrue(hdr.quickplay(tree, lambda s: None))
+            self.assertIn("SEQUENCE_ONLINE_MELEE_ANYONE", lua.read_text(encoding="utf-8"))
+            self.assertFalse(hdr.quickplay(tree, lambda s: None))
+            self.assertTrue(hdr_menu.restore(root, tree.mods, lambda s: None))
+            self.assertEqual(lua.read_text(encoding="utf-8"), self.SCRIPT)
+
+    def test_the_earlier_version_is_undone(self):
+        with tempfile.TemporaryDirectory() as root:
+            tree, lua = self.tree(root, hdr_menu.OLD_MARK + "the earlier version's\n")
+            keep = Path(root, "dump", "hdr", "menu_original")
+            keep.mkdir(parents=True)
+            (keep / "main_menu_layer_online.lua").write_text(self.SCRIPT, encoding="utf-8")
+            lay = Path(tree.mods, *hdr_menu.LAYOUT)
+            lay.parent.mkdir(parents=True)
+            lay.write_bytes(b"SARC" + bytes(64) + hdr_menu.OLD_LAYOUT_PART)
+            (keep / "layout.arc").write_bytes(b"SARC HDR's own")
+            self.assertTrue(hdr.quickplay(tree, lambda s: None))
+            self.assertEqual(lay.read_bytes(), b"SARC HDR's own")
+            self.assertFalse((keep / "layout.arc").exists())
+            text = lua.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith(hdr_menu.MARK))
+            self.assertIn("SEQUENCE_ONLINE_MELEE_ANYONE", text)
+            self.assertEqual((keep / "main_menu_layer_online.lua").read_text(encoding="utf-8"), self.SCRIPT)
+
+    def test_a_script_it_does_not_know_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as root:
+            tree, lua = self.tree(root, "local value = {}\n")
+            said = []
+            self.assertFalse(hdr.quickplay(tree, said.append))
+            self.assertEqual(lua.read_text(encoding="utf-8"), "local value = {}\n")
+            self.assertTrue(said)
 
 class ArcWorkspace(unittest.TestCase):
     """tools/arc_workspace.py: the hashes as smash-arc's hash40, and the folder names as the runtime shows them."""

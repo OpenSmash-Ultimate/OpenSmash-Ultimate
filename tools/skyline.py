@@ -1285,7 +1285,7 @@ NOT_BUILT = ("tools/modmanager/", "tools/weblauncher/", "tools/app_window.py", "
              "tools/dev/", "tools/mods.py", "tools/os_mods.py", "tools/progress.py", "tools/std_plugins.py",
              "tools/csk.py", "tools/miis.py", "tools/unlock_all.py", "tools/install_opensmash.ps1", "tools/install_windowsmash.ps1",
              "tools/update.py", "tools/arc.py", "tools/prc.py", "tools/msbt.py",
-             "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat", "tools/hdr.py", "tools/hdr_motion.py",
+             "tools/skyline.py", "tools/shader_aot.py", "tools/find_python.bat", "tools/hdr.py", "tools/hdr_motion.py", "tools/hdr_menu.py",
              "tools/arc_workspace.py")
 # (SSBU_UPDATE_GATE, on unless 0) Nor these: the commit the sources are at, which the installer's updater writes last,
 # so at EVERY update (tools/install_opensmash.ps1 Update-FromZip) - with it, an update that changed only the launcher
