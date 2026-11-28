@@ -13,6 +13,10 @@
     os_mods.py build
     os_mods.py conflicts               files more than one turned-on mod changes (RESULT: conflicts)
     os_mods.py updates                 installed GameBanana mods with a newer file (RESULT: updates)
+    os_mods.py hdr-install <zip|folder>   HewDraw Remix from its switch-package, already downloaded (tools/hdr.py)
+    os_mods.py hdr-download            HewDraw Remix's checked release, downloaded from GitHub and installed
+    os_mods.py hdr-only on|off         the launcher's HDR mode: HDR on, every other mod and community plugin off;
+                                       off gives back what was on (RESULT: changed; applied when it changed)
     os_mods.py export-list <file>      the installed mods, to share (mods.py export-list)
     os_mods.py import-list <file>      install a shared list's mods from GameBanana (RESULT: installed,
                                        already, missing)
@@ -33,6 +37,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import hdr  # noqa: E402
 import mods  # noqa: E402
 import skyline  # noqa: E402
 import std_plugins  # noqa: E402
@@ -73,12 +78,15 @@ def set_switches(tree, names, on):
     changed = False
     if list(names) == ["--all"]:   # (the settings menu's "Turn every mod off")
         names = list(state["mods"])
+    only = state.get("hdr_only")
     for name in names:
         if name == CODE:
             state["code_patches"] = bool(on)
             continue
         if name not in state["mods"]:
             raise mods.Error(f"no mod called {name}")
+        if on and isinstance(only, dict) and name not in (only.get("mods") or ()):   # (HDR only: mods.Tree.load keeps it off anyway)
+            raise mods.Error(f"{name}: HDR mode runs HDR's mods only. Pick Play in the launcher to play with your mods")
         changed |= bool(state["mods"][name].get("enabled")) != bool(on)
         state["mods"][name]["enabled"] = bool(on)
     tree.save(state)
@@ -272,6 +280,10 @@ def status(tree):
                 "source": "custom",
             })
     data["plugins"] = plugins
+    try:
+        data["hdr"] = hdr.status(tree)
+    except Exception:
+        data["hdr"] = {"installed": None, "on": False, "only": False}
     data["mods"].append({"name": CODE, "title": CODE_TITLE, "enabled": code_patches_on(tree), "files": 0, "about": CODE_ABOUT,
                          "online": "same", "code": "", "new_slots": False})
     print(json.dumps(data), flush=True)
@@ -342,6 +354,28 @@ def main(argv):
         if cmd == "vanilla":
             mods.play_vanilla(tree, log)
             return result(True)
+        if cmd == "hdr-install":
+            if len(argv) < 3:
+                raise mods.Error("name HDR's switch-package: its zip, or the folder it was unpacked to")
+            st = hdr.install(tree, argv[2], log)
+            return result(True, version=st["installed"])
+        if cmd == "hdr-download":
+            last = [-1]
+
+            def progress(done, total=1):
+                pct = int(done * 100 / total) if total else 0
+                if pct != last[0]:
+                    last[0] = pct
+                    log(f"percent {pct}")
+            st = hdr.download(tree, progress, log)
+            return result(True, version=st["installed"])
+        if cmd == "hdr-only":
+            if len(argv) < 3 or argv[2] not in ("on", "off"):
+                raise mods.Error("hdr-only on|off")
+            changed = hdr.set_only(tree, argv[2] == "on", log)
+            if changed:
+                mods.apply(tree, log)
+            return result(True, changed=changed)
         if cmd == "install":
             if len(argv) < 3:
                 raise mods.Error("name the GameBanana mod")
@@ -428,7 +462,7 @@ def main(argv):
             mods.apply(tree, log)
             return result(True, **got)
         raise mods.Error(f"unknown command {cmd}")
-    except mods.Error as e:
+    except (mods.Error, hdr.Error) as e:
         if cmd == "status":
             print(json.dumps({"error": str(e)}), flush=True)
             return 1

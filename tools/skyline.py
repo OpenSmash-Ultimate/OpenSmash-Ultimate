@@ -85,9 +85,18 @@ STANDARD = ("skyline", "plugins")   # (<tree>/skyline/plugins: the community plu
 
 
 def standard(tree):
-    """[(label, plugin file)] of the standard plugins (<tree>/skyline/plugins/*.nro), by name."""
+    """[(label, plugin file)] of the standard plugins (<tree>/skyline/plugins/*.nro), by name. HDR only (tools/hdr.py
+    set_only): only the ones it lists - the others stay built into the game, not loaded."""
     folder = os.path.join(tree, *STANDARD)
     names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".nro")) if os.path.isdir(folder) else []
+    try:
+        with open(os.path.join(tree, "mods", "mods.json"), encoding="utf-8") as f:
+            only = json.load(f).get("hdr_only")
+    except (OSError, ValueError, AttributeError):
+        only = None
+    if isinstance(only, dict) and only.get("plugins"):
+        keep = {n.lower() for n in only["plugins"]}
+        names = [n for n in names if n.lower() in keep]
     return [("(standard) " + n, os.path.join(folder, n)) for n in names]
 
 

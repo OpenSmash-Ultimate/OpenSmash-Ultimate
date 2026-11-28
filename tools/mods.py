@@ -180,6 +180,12 @@ class Tree:
             # picked up mid-install because a missing entry used to default to on.
             state["mods"].setdefault(n, {"enabled": False})
         state["mods"] = {n: m for n, m in state["mods"].items() if n in present}
+        only = state.get("hdr_only")
+        if isinstance(only, dict):   # (HDR only, tools/hdr.py set_only: its mods the only ones on, whatever turned another on)
+            allowed = set(only.get("mods") or ())
+            for n, m in state["mods"].items():
+                if n not in allowed:
+                    m["enabled"] = False
         return state
 
     def save(self, state):

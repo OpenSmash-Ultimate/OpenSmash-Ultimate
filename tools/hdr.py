@@ -5,7 +5,11 @@ as a switch the Mods app turns on and off - on, it is applied with the user's ow
 Usage:
   hdr.py status   [--tree <dir>]     installed or not, on or off
   hdr.py download [--tree <dir>]     download HDR's release package and install it (turned off)
+  hdr.py install <folder|zip> [--tree <dir>]   install it from a switch-package already downloaded
+                                     (the zip, or a folder it was unpacked to: a newer prerelease, say)
   hdr.py on|off   [--tree <dir>]     turn it on or off (then apply, and build plugins if asked)
+  hdr.py only on|off [--tree <dir>]  HDR only (the launcher's HDR mode): HDR on, every other mod and community
+                                     plugin off; off gives back what was on before
   hdr.py remove   [--tree <dir>]     delete it
 
 The package is what a Switch's SD card takes. Of it: ultimate/mods/hdr, hdr-assets and hdr-stages go
@@ -14,7 +18,16 @@ where both change a file; ultimate/stage-alts goes on the plugins' SD card (dump
 plugins (stage_config, stage_alts) are kept in dump/hdr/plugins and put among the standard plugins
 (skyline/plugins) while HDR is on. The package's ARCropolis, Smashline and nro_hook are the standard
 plugins' own builds (std_plugins.py), and hdr-launcher (the console's updater) isn't used: left out.
-HDR isn't shipped with OpenSmash: each user downloads it from HDR's releases."""
+HDR isn't shipped with OpenSmash: each user downloads it from HDR's releases.
+
+HDR only (the launcher's third mode, beside Play and Vanilla): HDR changes every fighter, and a moveset
+mod on top of it (or a community plugin it doesn't expect) can crash the game or, online, play a
+different match than the other players' games. So in this mode HDR's own mods are the only ones on and
+HDR's plugins the only community ones loaded: mods.json's "hdr_only" keeps what was on before (each
+mod's switch), mods.Tree.load turns every other mod off whatever its switch says while it is there -
+the Mods app, the game's settings menu, an import: none of them turns one on - and skyline.standard
+lists only ONLY_PLUGINS of the community plugins (the others stay built into the game, not loaded).
+Leaving it puts every switch back as it was."""
 import argparse
 import hashlib
 import json
@@ -41,6 +54,12 @@ MODS = ("hdr", "hdr-assets", "hdr-stages")
 PLUGINS = ("libstage_config.nro", "libstage_alts.nro")
 PLUGIN_DIR = "atmosphere/contents/01006A800016E000/romfs/skyline/plugins/"
 SD = ("ultimate/stage-alts/",)   # (the package's paths that go on the plugins' SD card as they are)
+# The plugins folder in the package: the console's layout, or that layout's sd-card copy without atmosphere/
+# (what a user who unpacked it for a modded Switch has: skyline/plugins at the top)
+PLUGIN_DIRS = (PLUGIN_DIR, "skyline/plugins/")
+# HDR only: the community plugins (skyline/plugins) that still load - ARCropolis reads HDR's files, Smashline
+# runs its fighters' code, nro_hook tells it of their modules - and HDR's stage plugins (PLUGINS)
+ONLY_PLUGINS = ("libarcropolis.nro", "libsmashline_plugin.nro", "libnro_hook.nro") + PLUGINS
 
 
 class Error(Exception):
@@ -52,7 +71,7 @@ def folder(tree):
 
 
 def installed(tree):
-    """The installed version, or None."""
+    """The installed version (a local package's: its ui/hdr_version.txt), or None."""
     try:
         with open(os.path.join(folder(tree), "installed.json"), encoding="utf-8") as f:
             v = json.load(f).get("version")
@@ -65,7 +84,8 @@ def status(tree):
     state = tree.load()
     have = installed(tree)
     return {"installed": have, "release": VERSION, "size": SIZE, "installed_size": INSTALLED_SIZE, "mods": list(MODS),
-            "on": bool(have) and all(state["mods"].get(m, {}).get("enabled") for m in MODS)}
+            "on": bool(have) and all(state["mods"].get(m, {}).get("enabled") for m in MODS),
+            "only": bool(state.get("hdr_only"))}
 
 
 def ssl_context():
@@ -127,22 +147,78 @@ def download(tree, progress=None, log=print):
     log(f"downloading HewDraw Remix {VERSION} from HDR's releases on GitHub ({SIZE / (1 << 30):.1f} GB)")
     fetch(target, progress, log)
     log("unpacking")
-    was_on = status(tree)["on"]
+    stage = unpack(tree, target, progress)
+    place(tree, stage, {"version": VERSION, "sha256": SHA256, "when": time.strftime("%Y-%m-%d %H:%M")}, log)
+    os.remove(target)
+    log(f"HewDraw Remix {VERSION} installed")
+    return status(tree)
+
+
+def wanted(name):
+    """A package file OpenSmash takes: HDR's three mods, the stage-alts list, its two stage plugins."""
+    return (any(name.startswith(f"ultimate/mods/{m}/") for m in MODS) or name.startswith(SD)
+            or any(name == d + p for d in PLUGIN_DIRS for p in PLUGINS))
+
+
+def unpack(tree, package, progress=None):
+    """The package's files OpenSmash takes, into dump/hdr/new (returned)."""
     stage = os.path.join(folder(tree), "new")
     shutil.rmtree(stage, ignore_errors=True)
-    with zipfile.ZipFile(target) as z:
-        names = [i for i in z.infolist() if not i.is_dir()]
-        wanted = [i for i in names if any(i.filename.startswith(f"ultimate/mods/{m}/") for m in MODS)
-                  or i.filename.startswith(SD) or i.filename in [PLUGIN_DIR + p for p in PLUGINS]]
-        total = sum(i.file_size for i in wanted) or 1
+    with zipfile.ZipFile(package) as z:
+        names = [i for i in z.infolist() if not i.is_dir() and wanted(i.filename)]
+        total = sum(i.file_size for i in names) or 1
         done = 0
-        for i in wanted:
+        for i in names:
             if ".." in i.filename.split("/") or i.filename.startswith("/"):
                 continue
             z.extract(i, stage)
             done += i.file_size
             if progress:
                 progress(0.9 + 0.1 * done / total)
+    return stage
+
+
+def install(tree, source, log=print):
+    """HDR from a switch-package already downloaded: its zip, or the folder it was unpacked to (ultimate/
+    and skyline/ or atmosphere/ at its top, or one folder down). Copied (the folder stays as it is)."""
+    source = os.path.abspath(source)
+    if os.path.isfile(source):
+        if not zipfile.is_zipfile(source):
+            raise Error(f"{source} isn't a zip: pick HDR's switch-package.zip or the folder it was unpacked to")
+        log(f"unpacking {os.path.basename(source)}")
+        stage = unpack(tree, source)
+    else:
+        top = source
+        if not os.path.isdir(os.path.join(top, "ultimate", "mods", "hdr")):   # (one folder down: switch-package/...)
+            inner = [os.path.join(source, n) for n in sorted(os.listdir(source)) if os.path.isdir(os.path.join(source, n, "ultimate", "mods", "hdr"))] \
+                if os.path.isdir(source) else []
+            if not inner:
+                raise Error(f"no HDR in {source}: it needs ultimate/mods/hdr, hdr-assets and hdr-stages (HDR's switch-package, unpacked)")
+            top = inner[0]
+        log(f"copying HDR from {top}")
+        stage = os.path.join(folder(tree), "new")
+        shutil.rmtree(stage, ignore_errors=True)
+        for dp, dirs, files in os.walk(top):
+            for n in files:
+                rel = os.path.relpath(os.path.join(dp, n), top).replace(os.sep, "/")
+                if wanted(rel):
+                    dest = os.path.join(stage, *rel.split("/"))
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy2(os.path.join(dp, n), dest)
+    version = ""
+    try:
+        with open(os.path.join(stage, "ultimate", "mods", "hdr", "ui", "hdr_version.txt"), encoding="utf-8-sig") as f:
+            version = f.read().strip()
+    except OSError:
+        pass
+    place(tree, stage, {"version": version or "local", "source": source, "when": time.strftime("%Y-%m-%d %H:%M")}, log)
+    log(f"HewDraw Remix {version or '(no version file)'} installed")
+    return status(tree)
+
+
+def place(tree, stage, record, log=print):
+    """dump/hdr/new's files where they go (a version there already: replaced), and installed.json."""
+    was_on = status(tree)["on"]
     for m in MODS:   # (a version there already: replaced)
         src = os.path.join(stage, "ultimate", "mods", m)
         if not os.path.isdir(src):
@@ -157,14 +233,15 @@ def download(tree, progress=None, log=print):
         shutil.move(os.path.join(stage, *p.strip("/").split("/")), dest)
     keep = os.path.join(folder(tree), "plugins")
     shutil.rmtree(keep, ignore_errors=True)
-    shutil.move(os.path.join(stage, *PLUGIN_DIR.strip("/").split("/")), keep)
+    found = next((os.path.join(stage, *d.strip("/").split("/")) for d in PLUGIN_DIRS
+                  if all(os.path.isfile(os.path.join(stage, *d.strip("/").split("/"), p)) for p in PLUGINS)), None)
+    if not found:
+        raise Error("HDR's package has no " + " or ".join(PLUGINS) + ": not the layout OpenSmash knows")
+    shutil.move(found, keep)
     shutil.rmtree(stage, ignore_errors=True)
     with open(os.path.join(folder(tree), "installed.json"), "w", encoding="utf-8") as f:
-        json.dump({"version": VERSION, "sha256": SHA256, "when": time.strftime("%Y-%m-%d %H:%M")}, f, indent=1)
-    os.remove(target)
+        json.dump(record, f, indent=1)
     set_on(tree, was_on, log)
-    log(f"HewDraw Remix {VERSION} installed")
-    return status(tree)
 
 
 def set_on(tree, on, log=print):
@@ -192,7 +269,40 @@ def set_on(tree, on, log=print):
     return status(tree)
 
 
+def set_only(tree, on, log=print):
+    """HDR only (the launcher's HDR mode), on or off. On: what each mod's switch was (and whether HDR was on)
+    kept in mods.json's "hdr_only", HDR turned on and every other mod off - mods.Tree.load keeps them off while
+    it is there, and skyline.standard loads only ONLY_PLUGINS of the community plugins. Off: every switch as
+    it was. Returns whether anything changed (an apply is then due)."""
+    state = tree.load()
+    if bool(state.get("hdr_only")) == bool(on):
+        return False
+    if on:
+        if not installed(tree):
+            raise Error("HDR isn't installed")
+        kept = {n: bool(m.get("enabled")) for n, m in state["mods"].items()}
+        set_on(tree, True, log)
+        state = tree.load()
+        state["hdr_only"] = {"enabled": kept, "hdr_was_on": all(kept.get(m) for m in MODS), "mods": list(MODS),
+                             "plugins": list(ONLY_PLUGINS)}
+        for n, m in state["mods"].items():
+            m["enabled"] = n in MODS
+        tree.save(state)
+        log("HDR only: HewDraw Remix on, every other mod and community plugin off")
+        return True
+    saved = state.pop("hdr_only")
+    for n, m in state["mods"].items():   # (a mod installed meanwhile: off, as a new one is)
+        m["enabled"] = bool(saved.get("enabled", {}).get(n, False))
+    tree.save(state)
+    if installed(tree):
+        set_on(tree, bool(saved.get("hdr_was_on")), log)
+    log("HDR only: off, the mods as they were")
+    return True
+
+
 def remove(tree, log=print):
+    if tree.load().get("hdr_only"):
+        set_only(tree, False, log)
     if installed(tree):
         set_on(tree, False, log)
     for m in MODS:
@@ -211,7 +321,8 @@ def remove(tree, log=print):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=("status", "download", "on", "off", "remove"))
+    ap.add_argument("command", choices=("status", "download", "install", "on", "off", "only", "remove"))
+    ap.add_argument("what", nargs="?", help="install: the package (zip or folder); only: on or off")
     ap.add_argument("--tree", default=os.path.dirname(HERE))
     a = ap.parse_args()
     tree = mods.Tree(a.tree)
@@ -220,6 +331,15 @@ def main():
             out = status(tree)
         elif a.command == "download":
             out = download(tree)
+        elif a.command == "install":
+            if not a.what:
+                raise Error("name the package: HDR's switch-package.zip or the folder it was unpacked to")
+            out = install(tree, a.what)
+        elif a.command == "only":
+            if a.what not in ("on", "off"):
+                raise Error("only on|off")
+            set_only(tree, a.what == "on")
+            out = status(tree)
         elif a.command in ("on", "off"):
             out = set_on(tree, a.command == "on")
         else:
