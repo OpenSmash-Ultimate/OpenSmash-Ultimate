@@ -374,3 +374,6 @@ int main(int argc, char **argv) {
     fflush(stdout);
     exit(0);   /* (net_relay.c's exit handler: LEAVE) */
 }
+
+/* (debug_perf_session.c, not linked here: the session summary's clean end, kernel.c svcExitProcess, gpu_menu.c Quit, hle_settings.c restart) */
+void perf_session_clean_exit(void) {}

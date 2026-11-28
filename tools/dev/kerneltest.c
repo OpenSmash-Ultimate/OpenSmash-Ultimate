@@ -489,3 +489,6 @@ int main(int argc, char **argv) {
     printf("%.1f s\n%d checks, %d failed\n", (double)(rt_clock_ns() - t0) / 1e9, checks, failures);
     return failures ? 1 : 0;
 }
+
+/* (debug_perf_session.c, not linked here: the session summary's clean end, kernel.c svcExitProcess, gpu_menu.c Quit, hle_settings.c restart) */
+void perf_session_clean_exit(void) {}
