@@ -28,10 +28,22 @@
  * is counted in logic frames here: missed refreshes are summed, and the game told of one each time they make a whole
  * 60 Hz frame (4 at 240, 2 at 120), the rest carried. A PC that keeps up misses none, and the game sees none.
  *
+ * Passes slower than a refresh (2026-11-28): the frame end's report does not cover them all - a pass the vsync thread
+ * waited for is not counted as missed - and the step was a quarter of a logic frame a pass whatever the pass took. So
+ * when the PC drew fewer than 240 pictures a second the game itself ran slower: a play.log at 240 with the select
+ * screen's 3450 draws a picture at 162 a second, a match's effects and a Final Smash's movie at 78-185, all in slow
+ * motion. Each pass's time is now measured, and the refreshes the passes ran late are summed (less those the report
+ * made up already); each whole one is given to the next pass, up to a whole 60 Hz frame a pass - at most one logic
+ * frame a pass, so the logic keeps 60 a second down to 60 pictures a second. A pass within a fifth of a refresh of on
+ * time adds nothing, so a PC that keeps up runs exactly as it did (the same passes for each logic frame: the motion
+ * blending and every frame-exact timing are unchanged). Lateness over 4 frames' worth (a load) is not made up.
+ * SSBU_FRAME_RATE_SLOWDOWN=1: the old way (the game slows down with the pictures).
+ *
  * Checked once before the first write: the game's build is 13.0.5's (the addresses are its) and the table reads as
  * above; else this file does nothing and says so. */
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "host.h"
@@ -51,6 +63,8 @@ static int ok = -1;             /* the build and the table checked: 1 good, 0 no
 static int written;             /* the step in the game's memory is ours (a write since the last put back) */
 static u32 rest, mult_was = 1;  /* (the division's remainder, carried: the steps average the entry / refreshes exactly) */
 static u64 missed;              /* (refreshes missed, short of a whole logic frame's) */
+static u64 last_ns;             /* (the last pass's frame end: a pass's time) */
+static u64 made_up, slow_passes, said_ns;   /* (refreshes made up for slow passes, and those passes: logged every 10 s) */
 
 extern volatile int display_frame_rate_refused;   /* (gpu_display.c: display_refresh_mult stays 1 then) */
 static int checked(void) {
@@ -83,6 +97,9 @@ static void frame_end_after(Cpu *c, const u64 args[8], void *ctx) {
     (void)c; (void)ctx;
     u32 m = (u32)rt_refresh_mult;
     if (m > 1 && !checked()) return;   /* (not this game's: nothing rewritten; display_refresh_mult goes back to 1) */
+    u64 now = rt_now_ns(), took = last_ns ? now - last_ns : 0, reported = 0;
+    last_ns = now;
+    if (m > 1 && args[2]) reported = ld64(args[2]);
     if (m > 1 && args[2]) {   /* the missed refreshes in logic frames (as hle_rb_core.c reads the report: count at x2, result at x0) */
         u64 p1 = args[0], p3 = args[2], n = ld64(p3);
         if (n) {
@@ -108,7 +125,26 @@ static void frame_end_after(Cpu *c, const u64 args[8], void *ctx) {
         mult_was = m; rest = 0;
     }
     rt_passes_per_logic = own ? (float)m * 60.0f / (float)own : (float)m;
-    u32 total = rest + own, step = total / m;
+    u32 refreshes = 1;   /* (the refreshes this pass stands for: 1 on time) */
+    static int slowdown = -1;
+    if (slowdown < 0) { const char *e = getenv("SSBU_FRAME_RATE_SLOWDOWN"); slowdown = e && *e == '1'; }
+    static double late;   /* (refreshes the passes ran late in all, not made up yet) */
+    if (!slowdown && took) {
+        double period = 1e9 / (60.0 * m), r = (double)took / period;
+        if (r > 1.2 || r < 0.8) late += r - 1;     /* (a pass on time, within a fifth of a refresh, changes nothing: no drift) */
+        late -= (double)reported;                   /* (what the report made up already is not made up twice) */
+        if (late < 0) late = 0;
+        if (late > 4.0 * m) late = 4.0 * m;        /* (a load or a stall: not run as a burst of logic frames afterwards) */
+        u32 k = (u32)late;
+        if (k > m - 1) k = m - 1;                   /* (at most a whole 60 Hz frame a pass: one logic frame) */
+        if (k) { refreshes += k; late -= k; made_up += k; slow_passes++; }
+    }
+    if (made_up && now - said_ns >= 10000000000ull) {
+        fprintf(stderr, "[frame rate] the last 10 s: %llu passes slower than a refresh, %llu refreshes made up (the game kept its speed)\n",
+                (unsigned long long)slow_passes, (unsigned long long)made_up);
+        made_up = slow_passes = 0; said_ns = now;
+    }
+    u32 total = rest + own * refreshes, step = total / m;
     rest = total % m;
     st32(FR_STEP, step ? step : 1);   /* (never 0: the scheduler would not run a logic frame again) */
     written = 1;
