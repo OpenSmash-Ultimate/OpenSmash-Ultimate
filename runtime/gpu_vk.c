@@ -269,6 +269,7 @@ static u64 vk_stat_dispatches, vk_stat_dispatched, vk_stat_clears_skipped, vk_st
 static u64 vk_stat_local_blocks, vk_ns_draw, vk_ns_dispatch, vk_ns_wait, vk_ns_present;
 static u64 vk_stat_pipelines, vk_stat_shaders, vk_stat_shader_failures, vk_stat_textures, vk_stat_upload_bytes, vk_stat_reused, vk_stat_passes;
 
+static void slabs_rewind(u32 frame);
 static VkCommandBuffer cmd(void);
 /* Something the GPU may still use, destroyed once the frame recording now is done. The frame is begun first: a
  * slot not yet begun frees its graves as it begins, after waiting for its own last work only, while the frames
@@ -529,6 +530,7 @@ static VkCommandBuffer cmd(void) {
     }
     f->ngraves = 0;
     for (u32 i = 0; i < f->nblocks; i++) f->blocks[i].used = 0;
+    slabs_rewind(frame_at);
     for (u32 i = 0; i < f->npools; i++) vkResetDescriptorPool(device, f->pools[i], 0);
     f->pool_at = 0;
     f->serial = ++frame_serial;
@@ -546,6 +548,7 @@ static VkCommandBuffer cmd(void) {
 static VkDeviceSize texel_align = 256, ubo_align = 256;
 static u32 limits_vendor, limits_device;   /* (the card's PCI vendor and device: set at the start) */
 static int limits_integrated;   /* (the processor's own graphics: it shares the processor's power and memory) */
+static int block_make(Block *b, VkDeviceSize bs);
 static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off) {
     cmd();
     Frame *f = &frames[frame_at];
@@ -559,11 +562,22 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
     Block *b = &f->blocks[f->nblocks];
     VkDeviceSize bs = BLOCK_SIZE;
     while (bs < size) bs *= 2;
+    if (!block_make(b, bs)) return NULL;
+    b->used = size;
+    f->nblocks++;
+    *buf = b->buf;
+    *off = 0;
+    return b->map;
+}
+
+/* An upload block of `bs` bytes the CPU writes (b->buf, b->map), in the card's CPU-visible memory where it has
+ * some, else the system's (below). 0 if it could not be made. */
+static int block_make(Block *b, VkDeviceSize bs) {
     VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, bs,
                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                               VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
-    if (vkCreateBuffer(device, &bci, NULL, &b->buf) != VK_SUCCESS) return NULL;
+    if (vkCreateBuffer(device, &bci, NULL, &b->buf) != VK_SUCCESS) return 0;
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(device, b->buf, &mr);
     /* (the card's own memory the CPU can write, where it has some: the draws read it there rather than
@@ -598,20 +612,18 @@ static u8 *arena(VkDeviceSize size, VkDeviceSize align, VkBuffer *buf, VkDeviceS
     VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, (uint32_t)local};
     if (local < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) {
         mai.memoryTypeIndex = (uint32_t)type;
-        if (type < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) { vkDestroyBuffer(device, b->buf, NULL); return NULL; }
+        if (type < 0 || vkAllocateMemory(device, &mai, NULL, &b->mem) != VK_SUCCESS) { vkDestroyBuffer(device, b->buf, NULL); b->buf = VK_NULL_HANDLE; return 0; }
     } else vk_stat_local_blocks++;
     vkBindBufferMemory(device, b->buf, b->mem, 0);
     if (vkMapMemory(device, b->mem, 0, VK_WHOLE_SIZE, 0, (void **)&b->map) != VK_SUCCESS) {
         vkDestroyBuffer(device, b->buf, NULL);
         vkFreeMemory(device, b->mem, NULL);
-        return NULL;
+        b->buf = VK_NULL_HANDLE;
+        return 0;
     }
     b->size = bs;
-    b->used = size;
-    f->nblocks++;
-    *buf = b->buf;
-    *off = 0;
-    return b->map;
+    b->used = 0;
+    return 1;
 }
 
 /* A view of upload memory as the shaders' raw buffers (ByteAddressBuffer: a uniform texel buffer of
@@ -673,6 +685,72 @@ static VkBufferView arena_view(VkBuffer buf, VkDeviceSize off, VkDeviceSize size
     arena_views[k].buf = buf; arena_views[k].off = off; arena_views[k].size = size; arena_views[k].view = v;
     arena_views[k].used = ++arena_view_use;
     return v;
+}
+
+/* Small uploads (constant buffers, short vertex streams: up to 4 KB) in fixed slots: each frame keeps chunks of
+ * upload memory cut into slots of 256 B to 4 KB, each slot's view made the first time it is used and kept, and
+ * hands them out in turn from the start each time the frame comes round. A busy stage copies a couple of
+ * thousand small constant buffers a frame; in the arena their places drifted from frame to frame with the
+ * draws, so a fifth of them needed a new view - vkCreateBufferView some 70,000 times a second on the drawing
+ * thread. A slot's view covers the whole slot: the bytes after the data are zeros, as a read past a
+ * smaller view gave. SSBU_VK_SLABS=0: the arena for these too, as before. */
+#define SLAB_CLASSES 5
+#define SLAB_SMALLEST 256u
+#define SLAB_CHUNK (1u << 20)
+#define SLAB_MAX_CHUNKS 64
+typedef struct SlabChunk { Block b; VkBufferView *views; u32 nslots; } SlabChunk;
+typedef struct Slab { SlabChunk chunks[SLAB_MAX_CHUNKS]; u32 nchunks, chunk_at, slot_at; } Slab;
+static Slab (*slabs)[SLAB_CLASSES];   /* [MAX_FRAMES][class] */
+static u64 vk_stat_slab_slots, vk_stat_slab_views;
+static int slabs_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *v = getenv("SSBU_VK_SLABS"); on = !(v && *v == '0'); }
+    return on;
+}
+static void slabs_rewind(u32 frame) {   /* (the frame's slots free again: the GPU is done with them) */
+    if (slabs)
+        for (u32 c = 0; c < SLAB_CLASSES; c++) slabs[frame][c].chunk_at = slabs[frame][c].slot_at = 0;
+}
+/* A slot for `size` bytes this frame: where the CPU writes them, its view, and the slot's size (*cap); NULL
+ * when the size has no slots (bigger than 4 KB) or none could be made - the arena then. */
+static u8 *slab_take(u32 size, VkBufferView *view, u32 *cap) {
+    if (!slabs_on() || !size || size > (SLAB_SMALLEST << (SLAB_CLASSES - 1))) return NULL;
+    u32 c = 0, cs = SLAB_SMALLEST;
+    while (cs < size) { cs <<= 1; c++; }
+    if (cs % texel_align) return NULL;
+    cmd();
+    if (!slabs && !(slabs = calloc(MAX_FRAMES, sizeof *slabs))) return NULL;
+    Slab *sl = &slabs[frame_at][c];
+    for (;;) {
+        if (sl->chunk_at < sl->nchunks) {
+            SlabChunk *ch = &sl->chunks[sl->chunk_at];
+            if (sl->slot_at < ch->nslots) {
+                u32 i = sl->slot_at;
+                if (!ch->views[i]) {
+                    VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, ch->b.buf, VK_FORMAT_R32_UINT,
+                                                 (VkDeviceSize)i * cs, cs};
+                    if (vkCreateBufferView(device, &ci, NULL, &ch->views[i]) != VK_SUCCESS) { ch->views[i] = VK_NULL_HANDLE; return NULL; }
+                    vk_stat_slab_views++;
+                }
+                sl->slot_at++;
+                vk_stat_slab_slots++;
+                *view = ch->views[i];
+                *cap = cs;
+                return ch->b.map + (size_t)i * cs;
+            }
+            sl->chunk_at++;
+            sl->slot_at = 0;
+            continue;
+        }
+        if (sl->nchunks == SLAB_MAX_CHUNKS) return NULL;
+        SlabChunk *ch = &sl->chunks[sl->nchunks];
+        if (!ch->views) {
+            if (!ch->b.buf && !block_make(&ch->b, SLAB_CHUNK)) return NULL;
+            ch->nslots = SLAB_CHUNK / cs;
+            if (!(ch->views = calloc(ch->nslots, sizeof *ch->views))) return NULL;   /* (the block kept: tried again next time) */
+        }
+        sl->nchunks++;
+    }
 }
 
 /* A descriptor set of the frame's pools (more pools as it needs them). */
@@ -1773,12 +1851,14 @@ static VkBufferView upload_host(const void *data, u32 size) {
     VkBuffer buf;
     VkDeviceSize off;
     cmd();
-    u8 *dst = arena(padded, texel_align, &buf, &off);
-    if (!dst) return upload_lost(padded, "no upload memory left this frame");
+    VkBufferView sv = VK_NULL_HANDLE;
+    u32 cap = padded;
+    u8 *dst = slab_take(padded, &sv, &cap);
+    if (!dst && !(dst = arena(padded, texel_align, &buf, &off))) return upload_lost(padded, "no upload memory left this frame");
     memcpy(dst, data, size);
-    if (padded > size) memset(dst + size, 0, padded - size);
+    if (cap > size) memset(dst + size, 0, cap - size);
     vk_stat_upload_bytes += padded;
-    VkBufferView v = arena_view(buf, off, padded);
+    VkBufferView v = sv ? sv : arena_view(buf, off, padded);
     return v ? v : upload_lost(padded, "vkCreateBufferView failed");
 }
 static VkBufferView upload(u64 va, u32 size) {
@@ -1797,13 +1877,15 @@ static VkBufferView upload(u64 va, u32 size) {
     const u8 *src = g ? P(const u8, g) : NULL;
     VkBuffer buf;
     VkDeviceSize off;
-    u8 *dst = arena(padded, texel_align, &buf, &off);
-    if (!dst) return upload_lost(padded, "no upload memory left this frame");
+    VkBufferView sv = VK_NULL_HANDLE;
+    u32 cap = padded;
+    u8 *dst = slab_take(padded, &sv, &cap);
+    if (!dst && !(dst = arena(padded, texel_align, &buf, &off))) return upload_lost(padded, "no upload memory left this frame");
     read_gpu(va, size, dst);   /* (one copy where it maps in one piece; page by page, zeros where gone, if not) */
     if (src && gone_in(src, size)) src = NULL;   /* (some of it gone: not reused) */
-    if (padded > size) memset(dst + size, 0, padded - size);
+    if (cap > size) memset(dst + size, 0, cap - size);
     vk_stat_upload_bytes += padded;
-    VkBufferView v = arena_view(buf, off, padded);
+    VkBufferView v = sv ? sv : arena_view(buf, off, padded);
     if (!v) return upload_lost(padded, "vkCreateBufferView failed");
     *u = (Upload){va, g, frames[frame_at].serial, gpu_stat_batches, write_seq, src ? writes_over(g, size) : 0, size, src ? v : VK_NULL_HANDLE};
     return v;
@@ -6463,6 +6545,9 @@ static void vk_status_lines(void) {
             vk_ns_phase[5] / 1e9, vk_ns_phase[6] / 1e9, vk_ns_phase[7] / 1e9, vk_ns_res[0] / 1e9, vk_ns_res[1] / 1e9, vk_ns_res[2] / 1e9, vk_stat_kept_made, vk_stat_kept_hits, vk_stat_kept_stale, vk_stat_cb_copies[0], vk_stat_cb_bytes[0] >> 20, vk_stat_cb_copies[1], vk_stat_cb_bytes[1] >> 20, vk_stat_cb_same, vk_stat_cb_compared, vk_stat_cb_unchanged, vk_stat_window_copies, vk_stat_window_hits,
             vk_stat_views_made, vk_stat_views_kept, vk_stat_sets_made, vk_stat_sets_kept, vk_stat_params_kept, vk_stat_binds_kept, vk_stat_index_reused,
             vk_stat_tex_memo, vk_stat_textures_1d, vk_stat_depth_textures, vk_stat_downscaled);
+    if (slabs_on())
+        fprintf(stderr, "[status] vulkan small uploads in fixed slots: %llu (their views: %llu made, kept since; SSBU_VK_SLABS=0 for the arena)\n",
+                vk_stat_slab_slots, vk_stat_slab_views);
 }
 
 /* The output (monitor) the window is on, referenced, for display pacing (gpu_display.c waits for its
@@ -6721,6 +6806,20 @@ static const GfxBackend *start_undo(void) {
         pipeline_cache = VK_NULL_HANDLE;
         cs_layout = gfx_layout = VK_NULL_HANDLE;
         cs_set_layout = gfx_set_layout = VK_NULL_HANDLE;
+        if (slabs) {   /* (the small uploads' slots: their views and blocks go with the device) */
+            for (u32 fr = 0; fr < MAX_FRAMES; fr++)
+                for (u32 c = 0; c < SLAB_CLASSES; c++)
+                    for (u32 k = 0; k < SLAB_MAX_CHUNKS; k++) {
+                        SlabChunk *ch = &slabs[fr][c].chunks[k];
+                        for (u32 i = 0; ch->views && i < ch->nslots; i++)
+                            if (ch->views[i]) vkDestroyBufferView(device, ch->views[i], NULL);
+                        free(ch->views);
+                        if (ch->b.buf) vkDestroyBuffer(device, ch->b.buf, NULL);
+                        if (ch->b.mem) vkFreeMemory(device, ch->b.mem, NULL);
+                    }
+            free(slabs);
+            slabs = NULL;
+        }
         vkDestroyDevice(device, NULL);
         device = VK_NULL_HANDLE;
         queue = VK_NULL_HANDLE;
