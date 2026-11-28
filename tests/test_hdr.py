@@ -252,12 +252,15 @@ class HdrOnly(unittest.TestCase):
         hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
         sky = self.root / 'dump' / 'skyline'
         (sky / 'plugins_all.txt').write_text('arcropolis\t(standard) libarcropolis.nro\nsmashline\t(standard) libsmashline_plugin.nro\n'
-                                             'mother_smash_fx\tMother Smash FX\n')
-        (sky / 'plugins.txt').write_text('arcropolis\nsmashline\nmother_smash_fx\n')
-        self.assertFalse(hdr.set_only(self.tree, True, lambda s: None) and False)
-        self.assertEqual((sky / 'plugins.txt').read_text().split(), ['arcropolis', 'smashline'])
+                                             'training_modpack\t(standard) libtraining_modpack.nro\n'
+                                             'one_slot_eff\t(standard) libone_slot_eff.nro\nmother_smash_fx\tMother Smash FX\n')
+        (sky / 'plugins.txt').write_text('arcropolis\nsmashline\ntraining_modpack\none_slot_eff\nmother_smash_fx\n')
+        (self.root / 'dump' / 'hdr' / 'plugins_extra.txt').write_text('one_slot_eff  # picked for HDR mode\n')
+        hdr.set_only(self.tree, True, lambda s: None)
+        self.assertEqual((sky / 'plugins.txt').read_text().split(), ['arcropolis', 'smashline', 'one_slot_eff'])
         hdr.set_only(self.tree, False, lambda s: None)
-        self.assertEqual((sky / 'plugins.txt').read_text().split(), ['arcropolis', 'smashline', 'mother_smash_fx'])
+        self.assertEqual((sky / 'plugins.txt').read_text().split(),
+                         ['arcropolis', 'smashline', 'training_modpack', 'one_slot_eff', 'mother_smash_fx'])
 
     def test_os_mods_switches_play_mods_in_hdr_mode(self):
         import os_mods

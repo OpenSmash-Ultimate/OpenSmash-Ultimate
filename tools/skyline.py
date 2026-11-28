@@ -509,11 +509,18 @@ def sync(tree, log=print, jobs=1):
     return names
 
 
+# HDR mode's plugins the game runs itself: the ones HDR's own package brings (ARCropolis, Smashline, nro_hook, its
+# stage plugins) - with the CSK Collection, One Slot Effects, param_hook and the Training Modpack running too, HDR's
+# matches stopped in Smashline ("unreachable smashline script called") a few seconds in. More, a name a line:
+# dump/hdr/plugins_extra.txt
+HDR_PLUGINS = ("arcropolis", "nro_hook", "smashline", "stage_alts", "stage_config")
+
+
 def write_list(tree, log=print):
     """dump/skyline/plugins.txt, the plugins the game runs itself (not ARCropolis' chainload), from plugins_all.txt
-    (sync's): all of them, but in the launcher's HDR mode (mods.hdr_mode) only the standard ones and HDR's - a mod's
-    plugin with a name of its own (not plugin.nro) runs whatever ARCropolis' workspace says, and one made for the
-    game as it is (Mother Smash FX's, on Smashline) crashes HDR's matches. The game reads it as it starts, so this
+    (sync's): all of them, but in the launcher's HDR mode (mods.hdr_mode) only HDR_PLUGINS and HDR's own - a mod's
+    plugin with a name of its own (not plugin.nro) runs whatever ARCropolis' workspace says, and community plugins
+    HDR doesn't ship with crash its matches. The game reads it as it starts, so this
     needs no build. The names written, or None without plugins_all.txt."""
     import mods
     p = Paths(tree)
@@ -525,9 +532,16 @@ def write_list(tree, log=print):
     t = mods.Tree(tree)
     hdr = mods.hdr_mode(t.load())
     keep = set(mods.hdr_seen(t))
-    names = [r[0] for r in rows if not hdr or r[1].startswith("(standard) ") or r[1] in keep]
+    allowed = set(HDR_PLUGINS)
+    try:
+        with open(os.path.join(tree, "dump", "hdr", "plugins_extra.txt"), encoding="utf-8") as f:
+            allowed |= {ln.split("#")[0].strip() for ln in f if ln.split("#")[0].strip()}
+    except OSError:
+        pass
+    names = [r[0] for r in rows if not hdr or r[0] in allowed or r[1] in keep]
     if hdr and len(names) < len(rows):
-        log("HDR mode: the mods' own plugins left out: " + ", ".join(r[0] for r in rows if r[0] not in names))
+        log("HDR mode: plugins HDR doesn't ship with left out: " + ", ".join(r[0] for r in rows if r[0] not in names)
+            + " (more for HDR mode: dump/hdr/plugins_extra.txt)")
     text = "".join(f"{n}\n" for n in names)
     old = open(p.list, encoding="utf-8").read() if os.path.exists(p.list) else ""
     if text != old:
