@@ -110,5 +110,31 @@ class DcDeferBits(unittest.TestCase):
             self.assertEqual((r.returncode, r.stdout.strip()), (0, 'ok'), r.stdout)
 
 
+class BeforeTheFight(unittest.TestCase):
+    """hle_rb_core.c SSBU_RB_DCDEFER_PRE: on before the set-up's copy (its threads read while the guest's run), the
+    fight takes it over, a set-up no fight follows lets it go (read from the source: the copies need the game)."""
+    source = (ROOT / 'runtime' / 'hle_rb_core.c').read_text(encoding='utf-8')
+
+    def body(self, head):
+        a = self.source.index(head)
+        return self.source[a:self.source.index('\n}\n', a)]
+
+    def test_on_before_the_set_up_copy(self):
+        pre = self.body('static void net_pre_fight(Cpu *c, u64 frame) {')
+        first = pre[pre.index('if (pre_frames == 1) {'):]
+        self.assertLess(first.index('dcd_pre_start();'), first.index('rb_save(c, frame)'))
+        done = pre[pre.index('pre_done = 1;'):]
+        self.assertLess(done.index('dcd_pre_start();'), done.index('rb_save(c, frame)'))
+
+    def test_taken_over_or_let_go(self):
+        self.assertIn('kernel_rb_defer_fight(1); dcd_pre_fight(1); }', self.source)
+        self.assertIn('else { dcd_pre_fight(0); fprintf(stderr, "[rb] this fight needs no savestates', self.source)
+        self.assertIn('dcd_pre_drop("a new set-up");', self.body('static void net_pre_reset(void) {'))
+        self.assertIn('dcd_pre_drop("a sudden death\'s hold ended");', self.body('static void sd_hold_end(const char *why) {'))
+        start = self.body('static void dcd_pre_start(void) {')
+        self.assertIn('if (!dcd_pre_mode() || dcd_pre_on || S.in_fight) return;', start)
+        self.assertIn('v = !(e && *e == \'0\');', self.body('static int dcd_pre_mode(void) {'))
+
+
 if __name__ == '__main__':
     unittest.main()
