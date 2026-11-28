@@ -2622,6 +2622,7 @@ static void event(int ev, unsigned ch)
             else
             {
                 fprintf(stderr, "[menu] quit\n");
+                { void perf_session_clean_exit(void); perf_session_clean_exit(); }   /* (a clean end: debug_perf_session.c) */
                 gfx_closing();
                 fflush(stderr);
                 ExitProcess(0);

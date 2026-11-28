@@ -58,6 +58,7 @@ static class Tests
             ShaderRebuild(Path.Combine(root, "shaders"));
             UpdateChannel().GetAwaiter().GetResult();
             GameRestart(Path.Combine(root, "restart"));
+            GameClose();
             // (a real SDL3.dll, when one is given: it loads and lists the pads, none needed)
             string? sdl = Environment.GetEnvironmentVariable("LAUNCHER_TEST_SDL_DIR");
             if (!string.IsNullOrEmpty(sdl))
@@ -487,6 +488,18 @@ static class Tests
     // after the first has ended: its lines go on into play.log, and the game's end (GameFolder.Ended, where the launcher
     // sends a crash report) is the restarted game's. (proc's Exited came with the first's: the report was looked for, and
     // play.log read, at "[settings] starting the game again".) A made-up game: cmd scripts, the second started by the first.
+    // (v0.5.5) The launcher closing the game (GameFolder.Close): WM_CLOSE to its window first, Kill when it has none or
+    // does not end in time; one already ended is left alone.
+    static void GameClose()
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("ping.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
+        foreach (string a in new[] { "-n", "30", "127.0.0.1" }) psi.ArgumentList.Add(a);
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        var t = System.Diagnostics.Stopwatch.StartNew();
+        Check(!GameFolder.Close(p, 5000) && p.WaitForExit(5000) && t.ElapsedMilliseconds < 4000, "close: a game without a window is ended at once (" + t.ElapsedMilliseconds + " ms)");
+        Check(GameFolder.Close(p), "close: one already ended is left alone");
+    }
+
     static void GameRestart(string dir)
     {
         Directory.CreateDirectory(dir);

@@ -292,7 +292,7 @@ namespace OpenSmash.Launcher
                 // launched it (Play sets _waitingForGame and lets it run on).
                 if (!_waitingForGame && _gameProcess != null && !_gameProcess.HasExited)
                 {
-                    try { _gameProcess.Kill(); } catch { }
+                    GameFolder.Close(_gameProcess);   // (WM_CLOSE first: a clean end, then Kill)
                 }
                 if (_shaderProc != null && !_shaderProc.HasExited)
                 {
@@ -4280,7 +4280,7 @@ namespace OpenSmash.Launcher
                 }
                 if (!shown)
                 {
-                    try { _gameProcess.Kill(); } catch { }
+                    GameFolder.Close(_gameProcess);   // (WM_CLOSE first: a clean end, then Kill)
                     _gameProcess = null;
                     await LaunchGameNow();
                     shown = _gameProcess != null;

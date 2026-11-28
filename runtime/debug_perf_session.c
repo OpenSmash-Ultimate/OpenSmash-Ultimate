@@ -102,6 +102,22 @@ void perf_session_write(int clean) {
 #endif
 }
 
+/* (v0.5.5) The game is ending by the player's or its own choice: the summary written with clean_exit true. Before, only
+ * the window's close (gpu_window.c WM_CLOSE) wrote it so: the settings menu's Quit - most players' way out - the
+ * settings' restart and the game's own exit (svcExitProcess) ended with the last 30 s write's false, and telemetry
+ * counted them as crashes (0.5.4's sessions: "crashed" was most of them). Called by gpu_menu.c's Quit,
+ * hle_settings.c's restart and kernel.c's svcExitProcess; a launcher that wants the game closed sends WM_CLOSE first
+ * (OpenSmash.Launcher GameFolder.Close). A 30 s write under way is waited for (up to 200 ms), not skipped.
+ * OPENSMASH_CLEAN_EXIT=0: nothing here, as before (only WM_CLOSE writes clean_exit true). */
+void perf_session_clean_exit(void) {
+    const char *v = getenv("OPENSMASH_CLEAN_EXIT");
+    if (v && (!strcmp(v, "0") || !strcmp(v, "off"))) return;
+#ifdef _WIN32
+    for (int i = 0; i < 20 && busy; i++) Sleep(10);
+#endif
+    perf_session_write(1);
+}
+
 /* SSBU_PERF_FRAMES=<file> (tests: tools/dev/stutter_run.py): every frame's time since the one before, in ms, a line
  * each, whatever the telemetry setting - the hitches a player sees, frame by frame. */
 static void perf_frame_log(void) {

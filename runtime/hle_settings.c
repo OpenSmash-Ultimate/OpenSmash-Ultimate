@@ -343,6 +343,7 @@ void settings_restart(void) {
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    { void perf_session_clean_exit(void); perf_session_clean_exit(); }   /* (a clean end: debug_perf_session.c) */
     ExitProcess(0);
 }
 #elif defined __APPLE__

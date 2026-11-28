@@ -29,6 +29,7 @@
 #include <unistd.h>         /* (geteuid) */
 #endif
 #undef R_OK   /* (unistd.h's access() flag: here R_OK is the kernel's result code, below) */
+void perf_session_clean_exit(void);   /* (debug_perf_session.c: svcExitProcess is a clean end) */
 
 #ifdef __APPLE__
 void rt_upnp_remove(void);   /* (linux/upnp.c: the netplay relay's port mapping, if it made one) */
@@ -1386,9 +1387,9 @@ static void system_call(Cpu *c, u32 n) {
             rt_fatal("the guest aborted on result %#x (module %u, description %u)", ld32(x[1]), ld32(x[1]) & 0x1FF, (ld32(x[1]) >> 9) & 0x1FFF);
         rt_fatal("the guest called svcBreak (reason %#llx, info %#llx, size %#llx)", x[0], x[1], x[2]);
 #ifdef __APPLE__   /* (not exit(): atexit handlers and C++ destructors under the threads still running - Metal's, AppKit's - can crash on the way out) */
-    case 0x07: fprintf(stderr, "guest process exited\n"); rt_upnp_remove(); ExitProcess(0);
+    case 0x07: fprintf(stderr, "guest process exited\n"); perf_session_clean_exit(); rt_upnp_remove(); ExitProcess(0);
 #else
-    case 0x07: fprintf(stderr, "guest process exited\n"); exit(0);
+    case 0x07: fprintf(stderr, "guest process exited\n"); perf_session_clean_exit(); exit(0);
 #endif
     case 0x0A: exit_thread(me);
     case 0x1F: {   /* ConnectToNamedPort(name) -> session handle */
