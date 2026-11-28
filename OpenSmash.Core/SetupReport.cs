@@ -143,6 +143,7 @@ namespace OpenSmash.Core
         public static string Stable(string firstLine, string root = null)
         {
             string t = Scrub(FirstLine(firstLine), root).ToLowerInvariant();
+            t = Regex.Replace(t, @"^(error|failed)\s*:\s*", "");   // (one launcher shows "ERROR: x", the other "x")
             // (this PC's user folder and another's read the same)
             t = Regex.Replace(t, @"<home>|\b[a-z]:[\\/]+(users|documents and settings)[\\/]+<user>|/(home|users)/<user>", "<home>");
             t = Regex.Replace(t, @"\b\d{4}-\d{2}-\d{2}([ t]\d{2}:\d{2}(:\d{2})?)?\b", "<time>");

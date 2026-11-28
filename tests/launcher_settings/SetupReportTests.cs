@@ -11,6 +11,8 @@ static partial class Tests
     static void SetupReportChecks(string repo)
     {
         Directory.CreateDirectory(repo);
+        // (more than a run's 3 here and no file of this PC's: the limits are tests/core's)
+        OpenSmash.Core.SetupReport.UseLimiter(new OpenSmash.Core.SetupReport.Limiter(null, 100));
         var (form, call, values) = Open(repo);
         using (form)
         {
@@ -72,18 +74,17 @@ static partial class Tests
                   "setup reports: sent in the background, the result on the window's thread: " + last);
         }
         finally { Environment.SetEnvironmentVariable("OPENSMASH_SETUP_REPORT_TEST", null); }
-        InstallerStopReported(Path.Combine(repo, "installer"));
+        InstallerStopReported(Path.Combine(repo, "installer"), EventScript, "step Build the game: The game could not be built", "events");
+        // the real installer's own way: "[9/10] Build the game" headings, and its catch's "ERROR: ..." line
+        InstallerStopReported(Path.Combine(repo, "installer-plain"), new[]
+        {
+            "Write-Output '[7/10] Your game files'", "Write-Output '[9/10] Build the game'",
+            "Write-Output 'error: arcropolis/src/lib.c:12: x undeclared'", "Write-Output ''",
+            "Write-Output 'ERROR: The build stopped (code 2): a plugin did not compile.'", "exit 1",
+        }, "step Build the game: The build stopped (code 2): a plugin did not compile.", "plain output");
     }
 
-    // The installer window end to end: a made-up tools\install_opensmash.ps1 that stops at the game's build the way the real
-    // one does (its events, an ARCropolis compile error, exit 2) run as the window runs it (powershell.exe), read, finished,
-    // reported - in test mode: the request is written, not sent - and the code on the status line.
-    static void InstallerStopReported(string repo)
-    {
-        Directory.CreateDirectory(Path.Combine(repo, "tools"));
-        File.WriteAllText(Path.Combine(repo, "tools", "source_version.txt"), "cab62fe" + new string('1', 33) + " 2026-11-27\n");
-        string stub = Path.Combine(repo, "tools", "install_opensmash.ps1");
-        File.WriteAllText(stub, string.Join("\r\n", new[]
+    static readonly string[] EventScript =
         {
             "Write-Output '##ssbu {\"ev\":\"plan\",\"steps\":[{\"id\":\"game\",\"title\":\"Your game files\",\"est_s\":10},{\"id\":\"build\",\"title\":\"Build the game\",\"est_s\":100}]}'",
             "Write-Output '##ssbu {\"ev\":\"step\",\"id\":\"game\",\"state\":\"done\"}'",
@@ -93,7 +94,17 @@ static partial class Tests
             "Write-Output '##ssbu {\"ev\":\"step\",\"id\":\"build\",\"state\":\"fail\",\"msg\":\"the build stopped (code 2)\"}'",
             "Write-Output '##ssbu {\"ev\":\"error\",\"msg\":\"The game could not be built: a plugin did not compile.\",\"hint\":\"See the log.\"}'",
             "exit 2",
-        }));
+        };
+
+    // The installer window end to end: a made-up tools\install_opensmash.ps1 that stops at the game's build the way the real
+    // one does (its events, an ARCropolis compile error, exit 2) run as the window runs it (powershell.exe), read, finished,
+    // reported - in test mode: the request is written, not sent - and the code on the status line.
+    static void InstallerStopReported(string repo, string[] script, string expected, string how)
+    {
+        Directory.CreateDirectory(Path.Combine(repo, "tools"));
+        File.WriteAllText(Path.Combine(repo, "tools", "source_version.txt"), "cab62fe" + new string('1', 33) + " 2026-11-27\n");
+        string stub = Path.Combine(repo, "tools", "install_opensmash.ps1");
+        File.WriteAllText(stub, string.Join("\r\n", script));
         string request = Path.Combine(repo, "request.json");
         Environment.SetEnvironmentVariable("OPENSMASH_SETUP_REPORT_TEST", request);
         try
@@ -109,15 +120,15 @@ static partial class Tests
             string Status() => (string)type.GetField("_status", flags)!.GetValue(form)!;
             var until = DateTime.UtcNow.AddSeconds(60);
             while ((Running() || !Status().Contains("test mode")) && DateTime.UtcNow < until) { tick.Invoke(form, null); Application.DoEvents(); Thread.Sleep(20); }
-            Check(!Running() && Status().StartsWith("Stopped. Error code ") && Status().Contains("test mode"), "installer: a stopped build shows its error code: " + Status());
+            Check(!Running() && Status().StartsWith("Stopped. Error code ") && Status().Contains("test mode"), "installer (" + how + "): a stopped build shows its error code: " + Status());
             string json = File.ReadAllText(request);
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             var b = doc.RootElement;
-            Check(b.GetProperty("product").GetString() == "opensmash" && b.GetProperty("kind").GetString() == "build_error", "installer: reported as a build_error of OpenSmash");
-            Check(b.GetProperty("exception").GetString()!.Contains("step Build the game: The game could not be built"), "installer: where and the error: " + b.GetProperty("exception").GetString());
+            Check(b.GetProperty("product").GetString() == "opensmash" && b.GetProperty("kind").GetString() == "build_error", "installer (" + how + "): reported as a build_error of OpenSmash");
+            Check(b.GetProperty("exception").GetString()!.Contains(expected), "installer (" + how + "): where and the error: " + b.GetProperty("exception").GetString());
             string text = b.GetProperty("text").GetString()!;
-            Check(text.Contains("exit code: 2") && text.Contains("x undeclared") && text.Contains("installer_window.log"), "installer: exit code, the compile error and the window's log in it");
-            Check(!text.Contains(repo) && !json.Contains(repo.Replace("\\", "\\\\")), "installer: the install's folder is not in it");
+            Check(text.Contains("exit code: ") && text.Contains("x undeclared") && text.Contains("installer_window.log"), "installer (" + how + "): exit code, the compile error and the window's log in it");
+            Check(!text.Contains(repo) && !json.Contains(repo.Replace("\\", "\\\\")), "installer (" + how + "): the install's folder is not in it");
         }
         finally { Environment.SetEnvironmentVariable("OPENSMASH_SETUP_REPORT_TEST", null); }
     }

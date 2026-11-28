@@ -42,12 +42,18 @@ public sealed partial class MainWindow
     void ReportInstallStop(Project p,int exit)
     {
         var (error,step)=Surface.InstallFailureInfo();
+        string tail=Surface.InstallLogTail(400);
+        if(error.Length==0||error.StartsWith("Setup stopped (exit",StringComparison.Ordinal))
+        {   // (only "Setup stopped (exit N)": the log's last error line first - the code is made of the first line)
+            string said=tail.Split('\n').Select(l=>l.Trim()).LastOrDefault(l=>System.Text.RegularExpressions.Regex.IsMatch(l,@"\b(error|failed|fatal|cannot|could not|denied|in use)\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))??"";
+            if(said.Length>0)error=said+(error.Length>0?"\n"+error:"");
+        }
         var f=new SetupFailure
         {
             Kind=SetupReport.KindFor("install",step,error),
             Where=(p.Platform==DesktopPlatform.Windows?"install_opensmash.ps1":"install.sh")+(step.Length>0?", step "+step:""),
             Error=error.Length>0?error:"Setup stopped (exit "+exit+").",ExitCode=exit,Root=p.Root,
-            Output=Surface.InstallLogTail(400),Logs=[p.PathIn("build","logs","installer_window.log"),p.PathIn("build","logs","shader_window.log")],
+            Output=tail,Logs=[p.PathIn("build","logs","installer_window.log"),p.PathIn("build","logs","shader_window.log")],
         };
         ReportSetup(f,(_,line)=>Surface.ShowInstallReportLine(line));
     }

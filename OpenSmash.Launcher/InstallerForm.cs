@@ -1080,11 +1080,17 @@ namespace OpenSmash.Launcher
             FlushLogFile();
             var step = _steps.FirstOrDefault(s => s.State == "fail");
             string stepName = step == null ? "" : (step.Id + " " + step.Title).Trim();
+            // the error's own line: the installer's "ERROR: ..." (its catch), else the log's last error line when the
+            // window only knows "It stopped (code N)" - the code is made of the first line, which must say what happened
+            var tail = _log.Skip(Math.Max(0, _log.Count - 400)).ToList();
+            string? said = tail.LastOrDefault(l => l.StartsWith("ERROR:", StringComparison.Ordinal))?.Substring(6).Trim();
+            if (string.IsNullOrEmpty(said) && _errMsg.StartsWith("It stopped (code", StringComparison.Ordinal)) said = LauncherForm.ErrorLine(string.Join("\n", tail));
+            string error = !string.IsNullOrEmpty(said) && !_errMsg.Contains(said, StringComparison.Ordinal) ? said + "\n" + _errMsg : _errMsg;
             var f = new SetupFailure
             {
-                Kind = SetupReport.KindFor(_jobKind == "update" ? "update" : "install", stepName, _errMsg),
+                Kind = SetupReport.KindFor(_jobKind == "update" ? "update" : "install", stepName, error),
                 Where = "install_opensmash.ps1 (" + _jobKind + ")" + (step != null ? ", step " + step.Title : ""),
-                Error = _errMsg, ExitCode = code, Root = _repo,
+                Error = error, ExitCode = code, Root = _repo,
                 Output = string.Join("\n", _log.Skip(Math.Max(0, _log.Count - 400))),
                 Logs = new[] { _logFile },
             };
