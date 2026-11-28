@@ -127,9 +127,25 @@ def bake_motion(tree, log=print, force=False):
     return True
 
 
+QUICKPLAY_SETTING = ("dump", "hdr", "quickplay.txt")
+
+
+def quickplay_wanted(tree):
+    """`hdr.py quickplay on` asked for it (dump/hdr/quickplay.txt "on"); off unless asked: the official lobby matches
+    Quickplay by build and lobby code, not by mods, so HDR's Quickplay meets games without HDR until it does."""
+    try:
+        with open(os.path.join(tree.root, *QUICKPLAY_SETTING), encoding="utf-8") as f:
+            return f.read().strip().lower() == "on"
+    except OSError:
+        return False
+
+
 def quickplay(tree, log=print):
-    """HDR's online pop-up's Smash starting Quickplay (tools/hdr_menu.py), at HDR mode, an install and an update (an
-    update brings HDR's own file back). A file it doesn't know: left as HDR made it, and said."""
+    """HDR's online pop-up's Smash starting Quickplay (tools/hdr_menu.py) when it is wanted (quickplay_wanted), at HDR
+    mode, an install and an update (an update brings HDR's own file back). A file it doesn't know: left as HDR made it,
+    and said."""
+    if not quickplay_wanted(tree):
+        return False
     import hdr_menu
     try:
         return hdr_menu.apply(tree.root, tree.mods, log)
@@ -836,6 +852,10 @@ def main():
             if a.what not in ("on", "off"):
                 raise Error("quickplay on|off")
             import hdr_menu
+            setting = os.path.join(tree.root, *QUICKPLAY_SETTING)
+            os.makedirs(os.path.dirname(setting), exist_ok=True)
+            with open(setting, "w", encoding="utf-8") as f:   # (kept: HDR mode, an install and an update follow it)
+                f.write(a.what + "\n")
             if a.what == "on":
                 hdr_menu.apply(tree.root, tree.mods)
             else:

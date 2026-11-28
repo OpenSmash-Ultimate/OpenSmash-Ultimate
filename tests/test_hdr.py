@@ -466,6 +466,8 @@ class HdrQuickplayMenu(unittest.TestCase):
 
     def tree(self, root, script):
         tree = mods.Tree(root)
+        Path(root, *hdr.QUICKPLAY_SETTING).parent.mkdir(parents=True, exist_ok=True)
+        Path(root, *hdr.QUICKPLAY_SETTING).write_text("on\n")
         lua = Path(tree.mods, *hdr_menu.SCRIPT)
         lua.parent.mkdir(parents=True)
         lua.write_text(script, encoding="utf-8")
@@ -497,6 +499,13 @@ class HdrQuickplayMenu(unittest.TestCase):
             self.assertTrue(text.startswith(hdr_menu.MARK))
             self.assertIn("SEQUENCE_ONLINE_MELEE_ANYONE", text)
             self.assertEqual((keep / "main_menu_layer_online.lua").read_text(encoding="utf-8"), self.SCRIPT)
+
+    def test_off_unless_asked(self):
+        with tempfile.TemporaryDirectory() as root:
+            tree, lua = self.tree(root, self.SCRIPT)
+            Path(root, *hdr.QUICKPLAY_SETTING).unlink()
+            self.assertFalse(hdr.quickplay(tree, lambda s: None))
+            self.assertEqual(lua.read_text(encoding="utf-8"), self.SCRIPT)
 
     def test_a_script_it_does_not_know_is_left_alone(self):
         with tempfile.TemporaryDirectory() as root:
