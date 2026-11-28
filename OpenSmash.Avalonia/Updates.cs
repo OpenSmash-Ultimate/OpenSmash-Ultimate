@@ -88,6 +88,7 @@ public sealed partial class MainWindow
         if(_closed||_updateBusy||Surface.OperationRunning||Surface.GameRunning)return;
         _updateBusy=true;Surface.SetOperationLabel("UPDATING OPENSMASH");Surface.OperationRunning=true;Surface.SetUpdateResult("updating","Updating OpenSmash...");
         string failure="";bool restart=false,launcherReplaced=false;
+        Exception? failureError=null;string stage="sources";   // (v0.5.5: the report's error and the step it stopped in)
         var p=RequireProject();
         string launcherBefore=LauncherStamp();
         try
@@ -105,17 +106,23 @@ public sealed partial class MainWindow
             // with the SDK or the newest release's - so it is not built a second time; it is used from the next start)
             if(p.Platform==DesktopPlatform.Windows&&fingerprint!=UpdateState.LauncherFingerprint(p)&&CanBuildSharedLauncher())UpdateState.Mark(UpdateState.LauncherMarker(p),after);
             launcherReplaced=p.Platform!=DesktopPlatform.Windows&&LauncherStamp()!=launcherBefore;
-            Surface.SetOperationLabel("UPDATING PYTHON PACKAGES");
+            Surface.SetOperationLabel("UPDATING PYTHON PACKAGES");stage="python packages";
             if(p.Platform==DesktopPlatform.Windows)await EnsureToolsPython(force:true);
             else await RunUpdateStep(Commands.PythonSetup(p),"python_setup.log");
-            await RebuildUpdatedGame();
+            stage="rebuild";await RebuildUpdatedGame();stage="online files";
             await EnsureOnlineFiles();   // #394: OnlineFiles.cs
             restart=File.Exists(UpdateState.LauncherMarker(p))&&await DotnetSdkAvailable();
         }
-        catch(Exception error){failure=error.Message;}
+        catch(Exception error){failure=error.Message;failureError=error;}
         finally{_updateBusy=false;Surface.OperationRunning=false;Surface.InvalidateVisual();}
         if(_closed)return;
-        if(failure.Length>0){Surface.SetUpdateResult("error","Update did not finish: "+failure);Surface.Alert("UPDATE DID NOT FINISH",failure+"\n\nCompleted work is kept. Pending rebuilds will be retried.");return;}
+        if(failure.Length>0)
+        {
+            string line=failureError!=null?ReportUpdateStop(p,failureError,stage):"";   // (v0.5.5: MainWindow.SetupReports.cs)
+            Surface.SetUpdateResult("error","Update did not finish: "+failure);
+            Surface.Alert("UPDATE DID NOT FINISH",failure+"\n\nCompleted work is kept. Pending rebuilds will be retried."+(line.Length>0?"\n\n"+line:""));
+            return;
+        }
         if(restart){try{ScheduleLauncherBuildAndRestart();return;}catch(Exception error){Surface.Alert("LAUNCHER UPDATE PENDING",error.Message);return;}}
         await CheckUpdates();
         if(!_closed)Surface.Alert("OPENSMASH UPDATED",launcherReplaced

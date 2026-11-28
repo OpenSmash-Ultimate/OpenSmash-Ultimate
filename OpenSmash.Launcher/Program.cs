@@ -51,6 +51,8 @@ namespace OpenSmash.Launcher
             // Per-monitor aware: the windows are drawn at the screen's own resolution. Both forms scale everything
             // they paint from their client height, and Theme.WindowSize sizes them for the monitor's scaling.
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            // (v0.5.5) the launcher's own crashes written and reported (SetupReports.cs; OPENSMASH_SETUP_REPORTS=0: not)
+            SetupReports.InstallCrashHandlers();
 
             // Ensure single instance
             using var mutex = new Mutex(true, "Global\\OpenSmashLauncher", out bool createdNew);
@@ -64,6 +66,7 @@ namespace OpenSmash.Launcher
             // Resolve repo root (where the .exe lives, or the repo above its build output folder)
             string repo = ProjectSetup.ExeRoot(AppContext.BaseDirectory);
             UiLocale.Initialize(repo);
+            if (ProjectSetup.IsProject(repo)) SetupReports.Root = repo;
 
             // Extract embedded resources (PowerShell scripts, icon) to a temp folder
             string workDir = Path.Combine(Path.GetTempPath(), "OpenSmash_" + Guid.NewGuid().ToString("N")[..8]);
@@ -100,6 +103,7 @@ namespace OpenSmash.Launcher
             }
 
             UiLocale.Initialize(repo);
+            SetupReports.Root = repo;
 
             // No build yet (or --installer): Install OpenSmash comes first.
             if (!GameFolder.IsBuilt(repo) || args.Contains("--installer", StringComparer.OrdinalIgnoreCase))

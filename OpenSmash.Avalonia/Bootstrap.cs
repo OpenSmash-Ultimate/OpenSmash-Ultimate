@@ -44,7 +44,13 @@ public sealed partial class MainWindow
             }
         }
         catch (OperationCanceledException) { Surface.FinishBootstrap("Download cancelled. No existing project files were changed."); }
-        catch (Exception error) { if(Surface.IsFirstRun)Surface.FinishBootstrap(error.Message);else Surface.Alert("SETUP",error.Message); }
+        catch (Exception error)
+        {   // (v0.5.5) the first download stopped: reported on its own, its code shown (MainWindow.SetupReports.cs)
+            string line = ReportSetup(new SetupFailure { Kind = "install_error", Where = "first start: download of the project", Error = SetupReport.Describe(error), Detail = error.ToString() },
+                                      (before, now) => Surface.ShowReportLine(before, now));
+            string shown = error.Message + (line.Length > 0 ? "\n\n" + line : "");
+            if(Surface.IsFirstRun)Surface.FinishBootstrap(shown);else Surface.Alert("SETUP",shown);
+        }
         finally
         {
             _bootstrapCancel.Dispose(); _bootstrapCancel = null;

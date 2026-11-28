@@ -68,7 +68,7 @@ public partial class LauncherForm
                 catch (Exception e) when (e is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { why = e.Message; }
             }
             if (why == "" && repairs.Contains(FileRepair.Plugins)) await BuildPlugins();
-            if (why != "") { UiLocale.Message("The repair could not be completed.\n\n" + why, "Verify game files"); return; }
+            if (why != "") { UiLocale.Message("The repair could not be completed.\n\n" + why + ReportSuffix(), "Verify game files"); return; }
             var left = await Task.Run(() =>
             {
                 var again = FileCheck.Check(_repo);

@@ -126,6 +126,7 @@ public sealed partial class MainWindow : Window
     void SetProject(string root,bool forceInstaller=false)
     {
         _project=new Project(root,Project.CurrentPlatform);ProjectLayout.Normalize(_project.Root);
+        LauncherCrash.Root=_project.Root;   // (v0.5.5: where launcher_crash.log goes)
         // (an online_server.txt without a line: the official lobby, the default - OpenSmash.Core.OnlineSettings)
         if(_backgroundActions)OpenSmash.Core.OnlineSettings.EnsureLine(_project.ConfigFile("online_server.txt"));
         Surface.SetProject(_project,forceInstaller);
@@ -243,7 +244,7 @@ public sealed partial class MainWindow : Window
         }
         catch(OperationCanceledException){exit=130;Surface.ReceiveInstallLine("Build stopped. Completed work is kept; press Resume to continue.");}
         catch(Exception error){Surface.ReceiveInstallLine("ERROR: "+error.Message);}
-        finally{_shaderPriority=null;_installerInput=null;_installerCancel.Dispose();_installerCancel=null;Surface.EndInstall(exit);Surface.SetProject(p);if(_closeAfterInstall)Close();}
+        finally{_shaderPriority=null;_installerInput=null;_installerCancel.Dispose();_installerCancel=null;Surface.EndInstall(exit);if(exit!=0&&exit!=130&&!_closeAfterInstall)ReportInstallStop(p,exit);Surface.SetProject(p);if(_closeAfterInstall)Close();}
     }
     async Task Play()
     {
@@ -258,6 +259,7 @@ public sealed partial class MainWindow : Window
         }
         finally{_playPreflight=false;}
         if(_closed)return;
+        if(await CheckStaleGame(p))return;   // (v0.5.5: a game not rebuilt after an update said first; Play again starts it as it is)
         Surface.GameRunning=true;Surface.StartingGame=true;Surface.InvalidateVisual();
         try
         {
@@ -288,7 +290,11 @@ public sealed partial class MainWindow : Window
     void RestoreAfterGame(int exit,string log,string logsDirectory)
     {
         Surface.GameRunning=false;Surface.StartingGame=false;
-        if(exit!=0)Surface.ShowGameFailure(GameExitReport.Describe(exit,log),()=>Commands.OpenPath(logsDirectory));
+        if(exit!=0)
+        {   // (v0.5.5) a game that could not use its game library, or wrote nothing: reported, its code in the message
+            string line=ReportGameStart(_project?.Root,exit,log);
+            Surface.ShowGameFailure(GameExitReport.Describe(exit,log)+(line.Length>0?"\n\n"+line:""),()=>Commands.OpenPath(logsDirectory));
+        }
         Show();WindowState=WindowState.Normal;Activate();
     }
     Task<string> Python(string script,params string[] args)=>Python(script,args,null);

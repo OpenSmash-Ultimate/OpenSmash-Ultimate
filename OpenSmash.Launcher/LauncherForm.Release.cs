@@ -113,7 +113,10 @@ namespace OpenSmash.Launcher
             catch (Exception ex)
             {
                 Updater.Log(_repo, "launcher not replaced: " + ex.Message);
-                UiLocale.Message(UiLocale.Text("The new launcher could not be installed: ") + ex.Message, "OpenSmash");
+                // (v0.5.5) reported on its own: a file in use, access denied (an antivirus), a download that failed its check
+                _reportLine = "";
+                ReportUpdate("launcher replacement: " + ex.Message, ex, "");
+                UiLocale.Message(UiLocale.Text("The new launcher could not be installed: ") + ex.Message + ReportSuffix(), "OpenSmash");
                 return false;
             }
             finally { ClearLoad(); }

@@ -13,5 +13,6 @@
   <ItemGroup>
     <ProjectReference Include="../../OpenSmash.Launcher/OpenSmash.Launcher.csproj" />
     <Compile Include="Program.cs" />
+    <Compile Include="SetupReportTests.cs" />
   </ItemGroup>
 </Project>

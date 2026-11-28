@@ -339,7 +339,7 @@ namespace OpenSmash.Launcher
                 new SettingTab { Name = "Display", SettingKeys = new[] { "ui_language", "window", "window_size", "pacing" } },
                 new SettingTab { Name = "Graphics", SettingKeys = new[] { "render_scale", "gpu", "renderer", "overlay", "hide_cursor" } },
                 new SettingTab { Name = "Audio", SettingKeys = new[] { "volume" } },
-                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "direct", "net_ping", "reports", "telemetry" } },   // ("direct": This network (LAN) only - the official lobbies are relay only)
+                new SettingTab { Name = "Online", SettingKeys = new[] { "name", "lobby", "region", "code", "server", "direct", "net_ping", "reports", "setup_reports", "telemetry" } },   // ("direct": This network (LAN) only - the official lobbies are relay only)
                 new SettingTab { Name = "Controllers", SettingKeys = new[] { "keyboard_player", "background", "remap", "pads" } },
                 new SettingTab { Name = "Update", SettingKeys = Array.Empty<string>() },
                 new SettingTab { Name = "Storage", SettingKeys = Array.Empty<string>() },
@@ -371,6 +371,8 @@ namespace OpenSmash.Launcher
                 // (v0.5.0, signed-in players only) what the launcher sends after a game: a crash's report, and the
                 // session's performance summary (aggregates: OpenSmash.Core CrashReport.cs, PerfReport.cs)
                 new Setting { Key = "reports", Label = "Send crash reports", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
+                // (v0.5.5) a failed install, update or build, the launcher's own crash: OpenSmash.Core SetupReport.cs
+                new Setting { Key = "setup_reports", Label = "Send setup error reports", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
                 new Setting { Key = "telemetry", Label = "Send performance summaries", Values = new[] { "on", "off" }, Labels = new[] { "On", "Off" } },
                 new Setting { Key = "keyboard_player", Label = "Keyboard plays as", Values = new[] { "1", "2", "3", "4", "5", "6", "7", "8", "0" }, Labels = new[] { "Player 1", "Player 2", "Player 3", "Player 4", "Player 5", "Player 6", "Player 7", "Player 8", "Nobody (no keyboard)" } },
                 new Setting { Key = "background", Label = "Controllers in the background", Values = new[] { "1", "0" }, Labels = new[] { "Work while another window is in front", "Only while the game is in front" } },
@@ -1126,7 +1128,13 @@ namespace OpenSmash.Launcher
             string script = GameFolder.Installer(_repo);
             if (!File.Exists(script)) throw new FileNotFoundException("tools\\install_opensmash.ps1 is missing.");
             SetLoad("REBUILDING THE GAME", -1);
-            try { return await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate", NoteGameBuildLine)); }
+            _reportLine = "";   // (the message after it names this rebuild's report, not an older one)
+            try
+            {
+                var built = await Task.Run(() => RunPowerShellUpdate(script, "-BuildAfterUpdate", NoteGameBuildLine));
+                if (built.Code != 0) ReportRebuild(built.Code, built.Output);   // (v0.5.5: LauncherForm.SetupReports.cs)
+                return built;
+            }
             finally { ClearLoad(); }
         }
 
@@ -1173,6 +1181,9 @@ namespace OpenSmash.Launcher
             SetLoad("UPDATING OPENSMASH", -1);
             Invalidate();
             string why = "";
+            Exception? whyEx = null;   // (v0.5.5: the report's error, its type and HRESULT - a file in use, access denied)
+            _setupReported = false; _reportLine = "";
+            SetupReports.Where = "update";
             string output = "";
             string beforeCommit = "";
             string beforeLauncherFingerprint = "";
@@ -1201,7 +1212,7 @@ namespace OpenSmash.Launcher
                 if (result.Code != 0) throw new InvalidOperationException(UiLocale.Text("The updater stopped (exit ") + result.Code + ").");
                 else await RunPythonStepAsync("UPDATING PYTHON PACKAGES");   // (an update can need a new package)
             }
-            catch (Exception ex) { why = ex.Message; }
+            catch (Exception ex) { why = ex.Message; whyEx = ex; }
             finally
             {
                 ClearLoad();
@@ -1273,7 +1284,7 @@ namespace OpenSmash.Launcher
                         return;
                     }
                 }
-                catch (Exception ex) { why = ex.Message; }
+                catch (Exception ex) { why = ex.Message; whyEx ??= ex; }
                 finally
                 {
                     _updateApplying = false;
@@ -1286,10 +1297,11 @@ namespace OpenSmash.Launcher
             if (why.Length > 0)
             {
                 if (output.Contains("changes of its own")) why = "This copy has local changes, so it cannot be updated automatically. Update it with git, or use a clean download.";
+                else ReportUpdate(why, whyEx, output);   // (v0.5.5: reported on its own, the code in the message)
                 _updateState = "error";
                 _updateMessage = UiLocale.Text("Update failed: ") + ShortError(why);
-                _updateDetail = "";
-                UiLocale.Message(UiLocale.Text("The update or rebuild could not be completed.\n\n") + why, "OpenSmash");
+                _updateDetail = _reportLine;
+                UiLocale.Message(UiLocale.Text("The update or rebuild could not be completed.\n\n") + why + ReportSuffix(), "OpenSmash");
             }
             else
             {
@@ -1903,6 +1915,7 @@ namespace OpenSmash.Launcher
             RegionView();
             _iniValues["reports"] = FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt")) ? "off" : "on";
             _iniValues["telemetry"] = OpenSmash.Core.PerfReport.Enabled(_repo) ? "on" : "off";
+            _iniValues["setup_reports"] = OpenSmash.Core.SetupReport.SettingOn(_repo) ? "on" : "off";
             _saveDisk = OpenSmash.Core.DiskSpace.Saving(_repo);   // (Storage page: config\save_disk.txt)
             var gpu = _settings.First(s => s.Key == "gpu");
             if (!gpu.Values.Contains(_iniValues["gpu"]))
@@ -1941,7 +1954,7 @@ namespace OpenSmash.Launcher
                 catch { }
             }
             // (the server region and Auto's pick - the game's menu writes them too - and the reports' switch: config's own)
-            foreach (string name in new[] { "server_region.txt", "server_region_auto.txt", "crash_reports.txt", OpenSmash.Core.DiskSpace.SettingFile })
+            foreach (string name in new[] { "server_region.txt", "server_region_auto.txt", "crash_reports.txt", OpenSmash.Core.SetupReport.SettingFile, OpenSmash.Core.DiskSpace.SettingFile })
             {
                 try
                 {
@@ -2115,6 +2128,7 @@ namespace OpenSmash.Launcher
                     File.WriteAllText(Path.Combine(_repo, "config", "crash_reports.txt"), _iniValues.GetValueOrDefault("reports", "on") == "off" ? "off" : "on");
                 }
                 if (_changed.Contains("telemetry")) OpenSmash.Core.PerfReport.SetEnabled(_repo, _iniValues.GetValueOrDefault("telemetry", "on") != "off");
+                if (_changed.Contains("setup_reports")) OpenSmash.Core.SetupReport.SetSetting(_repo, _iniValues.GetValueOrDefault("setup_reports", "on") != "off");
                 if (_changed.Contains("region"))
                 {
                     OpenSmash.Core.ServerRegion.SetSetting(_repo, _iniValues.GetValueOrDefault("region", "auto"));
@@ -3926,8 +3940,10 @@ namespace OpenSmash.Launcher
                     else
                     {
                         string log = string.Join(Environment.NewLine, _maintenanceLog);
+                        _reportLine = "";
+                        ReportSetup("build", "maintenance build", "exit " + exitCode + ": " + ErrorLine(log), exitCode, log);   // (v0.5.5)
                         if (log.Length > 1800) log = log.Substring(log.Length - 1800);
-                        MessageBox.Show($"The build stopped (exit code {exitCode}).{Environment.NewLine}{Environment.NewLine}{log}", "OpenSmash");
+                        MessageBox.Show($"The build stopped (exit code {exitCode}).{Environment.NewLine}{Environment.NewLine}{log}{ReportSuffix()}", "OpenSmash");
                     }
                 }));
             }
@@ -4235,7 +4251,7 @@ namespace OpenSmash.Launcher
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, "The game is still out of date and cannot be started.\n\n" + ex.Message,
+                    MessageBox.Show(this, "The game is still out of date and cannot be started.\n\n" + ex.Message + ReportSuffix(),
                         "OpenSmash update", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
@@ -4268,6 +4284,7 @@ namespace OpenSmash.Launcher
                 return;
             }
 
+            CheckStaleGame();   // (v0.5.5: a game not rebuilt after an update said and reported; LauncherForm.SetupReports.cs)
             bool shown = false;
             if (_gameProcess != null && !_gameProcess.HasExited)
             {
@@ -4296,7 +4313,7 @@ namespace OpenSmash.Launcher
             {
                 string log = Path.Combine(_buildDir, "play.log");
                 string why = File.Exists(log) ? Tail(File.ReadAllText(log)) : "The game exited before its window opened.";
-                UiLocale.Message(UiLocale.Text("The game stopped as it was starting.\n\n") + why, "OpenSmash");
+                UiLocale.Message(UiLocale.Text("The game stopped as it was starting.\n\n") + why + ReportGameStart(_gameProcess), "OpenSmash");
                 return;
             }
             if (!shown)

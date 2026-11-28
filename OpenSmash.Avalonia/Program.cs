@@ -24,6 +24,7 @@ internal static class Program
             return;
         }
         Arguments = args;
+        LauncherCrash.Install();   // (v0.5.5: the launcher's own crashes written and reported; MainWindow.SetupReports.cs)
         AppBuilder.Configure<App>().UsePlatformDetect().WithInterFont().LogToTrace()
             .StartWithClassicDesktopLifetime(args);
     }

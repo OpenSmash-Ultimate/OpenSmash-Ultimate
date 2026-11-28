@@ -211,6 +211,7 @@ static class Program
 
     static async Task<int> Main()
     {
+        await SetupReportChecks.Run(Check);   // (v0.5.5: SetupReportChecks.cs)
         // ---- versions
         Check(SemVer.Parse("0.5.0") > SemVer.Parse("0.5.0-rc.2"), "release newer than its rc");
         Check(SemVer.Parse("0.5.0-rc.10") > SemVer.Parse("0.5.0-rc.2"), "numeric pre-release parts");
