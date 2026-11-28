@@ -151,6 +151,13 @@ namespace OpenSmash.Launcher
                 _view = "fail";
                 _errMsg = ex is HttpRequestException ? "GitHub could not be reached (" + ex.Message + "). Check the internet connection and try again." : ex.Message;
                 SetStatus("The download stopped.", Theme.Bad);
+                // (v0.5.5) a first install whose download stopped: reported on its own (SetupReports.cs), the code shown
+                var failure = new OpenSmash.Core.SetupFailure
+                {
+                    Kind = "install_error", Where = "first start: download and unpack of the project",
+                    Error = OpenSmash.Core.SetupReport.Describe(ex), Detail = ex.ToString(),
+                };
+                SetupReports.Send(failure, this, line => { if (_view == "fail") SetStatus(UiLocale.Text("The download stopped. ") + line, Theme.Bad); });
                 return;
             }
             finally { _cts?.Dispose(); _cts = null; Invalidate(); }

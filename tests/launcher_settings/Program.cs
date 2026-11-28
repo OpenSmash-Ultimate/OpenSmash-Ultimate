@@ -7,7 +7,7 @@ using System.Reflection;
 using System.Windows.Forms;
 using OpenSmash.Launcher;
 
-static class Tests
+static partial class Tests
 {
     static int count;
     static void Check(bool ok, string name) { if (!ok) throw new Exception("FAIL " + name); count++; Console.WriteLine("PASS " + name); }
@@ -47,6 +47,7 @@ static class Tests
         try
         {
             Lobby();
+            SetupReportChecks(Path.Combine(root, "setup reports"));   // (v0.5.5: SetupReportTests.cs)
             OnlineRules(Path.Combine(root, "online"));
             FreshFolder(Path.Combine(root, "fresh"));
             GameChangesKept(Path.Combine(root, "game"));

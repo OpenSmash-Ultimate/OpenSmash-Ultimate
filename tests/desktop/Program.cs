@@ -56,6 +56,8 @@ static void Check(bool condition, string message)
 }
 
 string root = Path.Combine(Path.GetTempPath(), "OpenSmash desktop test ' & space " + Guid.NewGuid().ToString("N"));
+// (v0.5.5) a setup error report made by a check is written beside the test's folders, never sent (SetupReportChecks.cs)
+Environment.SetEnvironmentVariable(SetupReport.TestVariable,Path.Combine(root,"setup_report_test.json"));
 Directory.CreateDirectory(Path.Combine(root, "runtime"));
 Directory.CreateDirectory(Path.Combine(root, "tools"));
 File.WriteAllText(Path.Combine(root, "tools", "os_mods.py"), "");
@@ -328,6 +330,7 @@ try
     AccountChecks.Run(root,fixture);
     AccountChecks.Region(root);
     RoomsChecks.Run(root);
+    SetupReportChecks.Run(root);   // (v0.5.5)
     Console.WriteLine("All desktop launcher checks passed.");
 }
 finally

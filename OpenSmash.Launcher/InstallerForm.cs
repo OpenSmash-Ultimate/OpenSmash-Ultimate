@@ -15,6 +15,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using OpenSmash.Core;
 
 namespace OpenSmash.Launcher
 {
@@ -99,6 +100,7 @@ namespace OpenSmash.Launcher
         double _shownFrac;                    // the big percent: never backwards within a job
         string _errMsg = "", _errHint = "", _errAction = "", _doneMsg = "";
         bool? _doneOk;
+        bool _stoppedByUser;                  // (v0.5.5: a stop the player asked for is not reported)
 
         // tools\install_opensmash.ps1's ten steps, so the steps not reached yet have their names and
         // estimates from the start: a step's estimate counts in the time left until it says its own.
@@ -937,6 +939,7 @@ namespace OpenSmash.Launcher
             if (!dry && bad.Count > 0)
             {
                 Alert("FIX THESE FOLDERS", UiLocale.Text("Please fix: ") + string.Join(", ", bad) + UiLocale.Text(".\n\nThe line under each folder says what is wrong. Press Check files after you change one."));
+                ReportFolders(bad);
                 return;
             }
             string ps1 = GameFolder.Installer(_repo);
@@ -990,7 +993,8 @@ namespace OpenSmash.Launcher
         void RunJob(string kind, bool dry, string exe, List<string> args)
         {
             _jobKind = kind; _jobDry = dry;
-            _running = true; _succeeded = false;
+            _running = true; _succeeded = false; _stoppedByUser = false;
+            SetupReports.Where = "installer window: " + kind;
             _jobStart = DateTime.Now;
             _logScroll = 0;
             ResetSteps();
@@ -1053,6 +1057,7 @@ namespace OpenSmash.Launcher
                         ? "Fix the problem, then press Resume: finished steps are not repeated."
                         : "Fix the problem, then press Retry.";
                 SetStatus("Stopped.", Theme.Bad);
+                if (!_stoppedByUser && !_jobDry) ReportStop(code);
             }
 
             if (_jobKind == "install" && !_jobDry)
@@ -1068,10 +1073,54 @@ namespace OpenSmash.Launcher
             _dirty = true;
         }
 
+        // (v0.5.5) the setup stopped with an error: a report on its own (SetupReports.cs, OpenSmash.Core SetupReport.cs),
+        // its error code on the status line and in the log. The failing step decides install_error or build_error.
+        void ReportStop(int code)
+        {
+            FlushLogFile();
+            var step = _steps.FirstOrDefault(s => s.State == "fail");
+            string stepName = step == null ? "" : (step.Id + " " + step.Title).Trim();
+            // the error's own line: the installer's "ERROR: ..." (its catch), else the log's last error line when the
+            // window only knows "It stopped (code N)" - the code is made of the first line, which must say what happened
+            var tail = _log.Skip(Math.Max(0, _log.Count - 400)).ToList();
+            string? said = tail.LastOrDefault(l => l.StartsWith("ERROR:", StringComparison.Ordinal))?.Substring(6).Trim();
+            if (string.IsNullOrEmpty(said) && _errMsg.StartsWith("It stopped (code", StringComparison.Ordinal)) said = LauncherForm.ErrorLine(string.Join("\n", tail));
+            string error = !string.IsNullOrEmpty(said) && !_errMsg.Contains(said, StringComparison.Ordinal) ? said + "\n" + _errMsg : _errMsg;
+            var f = new SetupFailure
+            {
+                Kind = SetupReport.KindFor(_jobKind == "update" ? "update" : "install", stepName, error),
+                Where = "install_opensmash.ps1 (" + _jobKind + ")" + (step != null ? ", step " + step.Title : ""),
+                Error = error, ExitCode = code, Root = _repo,
+                Output = string.Join("\n", _log.Skip(Math.Max(0, _log.Count - 400))),
+                Logs = new[] { _logFile },
+            };
+            SetupReports.Send(f, this, line =>
+            {
+                if (_running) return;   // (a new job began meanwhile)
+                Log(line);
+                SetStatus(UiLocale.Text("Stopped. ") + line, Theme.Bad);
+                Invalidate();
+            });
+        }
+
+        // (v0.5.5) Install refused because a folder is not right (no prod.keys, no game files, no firmware): reported too, so
+        // that we see how many players stop there and why (the line under each folder)
+        void ReportFolders(List<string> bad)
+        {
+            string Why(string what) => what switch { "Keys" => _keysStatus, "Firmware" => _fwStatus, _ => _gameStatus };
+            var f = new SetupFailure
+            {
+                Kind = "install_error", Where = "installer window: folders to fix before the install",
+                Error = string.Join("; ", bad.Select(b => b + ": " + Why(b))), Root = _repo,
+            };
+            SetupReports.Send(f, this, line => { SetStatus(line, Theme.Warn); Invalidate(); });
+        }
+
         void StopJob()
         {
             Confirm("STOP THE BUILD?", "The next start goes on from where it stopped: finished steps are not repeated.", "STOP", () =>
             {
+                _stoppedByUser = true;
                 _job?.Kill();      // only the process tree this window started
                 Log("Stopped by the user.");
             });
