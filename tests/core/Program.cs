@@ -759,6 +759,31 @@ static class Program
             Check(h.Mod == null && h.Text != null && !h.Text.Contains("turn that mod off"), "crash blame: a standard plugin - no mod to turn off");
             Check(CrashBlame.HintFor(broot, none) == (null, null), "crash blame: nothing named, nothing said");
             Check(CrashBlame.HintOn(null) && CrashBlame.HintOn("1") && !CrashBlame.HintOn("0") && !CrashBlame.HintOn("Off"), "crash blame: OPENSMASH_CRASH_MOD_HINT");
+            // (a known crash with a plugin loaded, runtime/crash_blame.h known_crash: The CSK Collection's, a standard
+            // plugin - the mod offered is the one that adds characters through it, csk.json)
+            string known = "\n*** host exception 0xc0000005 during nnMain: reading address 0x20 - with plugin the_csk_collection (a known crash with it loaded: main+0x35c2890)\n";
+            string knownCopy = known.Replace("plugin the_csk_collection (", "plugin the_csk_collection_ (");
+            Check(CrashBlame.Plugin(known) is { Module: "the_csk_collection", Own: false, Known: true } && CrashBlame.Plugin(own) is { Known: false }, "crash blame: a known crash's plugin");
+            h = CrashBlame.HintFor(broot, known);
+            Check(h.Mod == null && h.Text != null && h.Text.Contains("the_csk_collection") && h.Text.Contains("new characters"), "crash blame: a known crash, no record of who uses the plugin: " + h.Text);
+            File.WriteAllText(Path.Combine(broot, "dump", "skyline", "plugins.json"),
+                "{\"A1\": {\"module\": \"smashline\", \"mod\": \"(standard) libsmashline_plugin.nro\", \"file\": \"x\"},\n" +
+                " \"B2\": {\"module\": \"made_up_moveset\", \"mod\": \"Made-up Moveset (1.0)\", \"file\": \"y\"},\n" +
+                " \"C3\": {\"module\": \"made_up_menu\", \"mod\": \"Made-up Menu\", \"file\": \"z\"},\n" +
+                " \"D4\": {\"module\": \"the_csk_collection\", \"mod\": \"(standard) libthe_csk_collection.nro\", \"file\": \"w\"},\n" +
+                " \"E5\": {\"module\": \"made_up_fighter\", \"mod\": \"Made-up Fighter\", \"file\": \"v\"}}");
+            string cskJson = Path.Combine(broot, "dump", "skyline", "csk.json");
+            File.WriteAllText(cskJson, "[{\"kind\": \"ui_chara_db\", \"plugin\": \"made_up_fighter\", \"ui_chara_id\": \"0x1\"},\n" +
+                                       " {\"kind\": \"ui_layout_db\", \"plugin\": \"made_up_fighter\", \"ui_layout_id\": \"0x2\"}]");
+            Check(CrashBlame.CskUsers(broot).SequenceEqual(new[] { "Made-up Fighter" }), "crash blame: the mods that add characters through the CSK Collection");
+            h = CrashBlame.HintFor(broot, known);
+            Check(h.Mod == "Made-up Fighter" && h.Text.Contains("\"Made-up Fighter\"") && h.Text.Contains("turn that mod off"), "crash blame: a known crash offers the one mod that uses the plugin: " + h.Text);
+            Check(CrashBlame.HintFor(broot, knownCopy).Mod == "Made-up Fighter", "crash blame: a known crash with a copy of the plugin (a trailing _)");
+            File.WriteAllText(cskJson, "[{\"plugin\": \"made_up_fighter\"}, {\"plugin\": \"made_up_moveset\"}, {\"plugin\": \"smashline\"}]");
+            h = CrashBlame.HintFor(broot, known);
+            Check(h.Mod == null && h.Text.Contains("\"Made-up Fighter\"") && h.Text.Contains("\"Made-up Moveset (1.0)\""), "crash blame: a known crash, several mods use the plugin: named, none offered: " + h.Text);
+            File.WriteAllText(cskJson, "not json");
+            Check(CrashBlame.CskUsers(broot).Count == 0, "crash blame: a broken csk.json");
             Directory.CreateDirectory(Path.Combine(broot, "reports"));
             File.WriteAllText(Path.Combine(broot, "reports", "crash_20990101_000000.txt"), own);
             Check(CrashBlame.Hint(broot, DateTime.UtcNow.AddMinutes(-1)).Mod == "Made-up Moveset (1.0)", "crash blame: the newest crash report after a game");
