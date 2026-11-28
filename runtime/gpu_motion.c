@@ -51,6 +51,7 @@ typedef struct Entry {
     u64 key;
     u32 size, passes;        /* passes: pictures since the last change */
     int used, live, cut;     /* live: changes faster than the logic; cut: the last change was a jump */
+    int moving;              /* the last change came a logic frame after the one before (extrapolate guesses on only then) */
     u64 seen;                /* the picture it was last read in */
     u8 *last, *prev;         /* (size bytes each) */
 } Entry;
@@ -76,11 +77,31 @@ void motion_frame(u64 mark) {
     ReleaseSRWLockExclusive(&marks_lock);
 }
 
-static void sweep(void) {   /* entries no draw has read for a while: freed */
+/* Entries no draw has read for a while: freed, and the table built again from the rest. (Until 2026-11-28 a freed
+ * entry stayed a tombstone, used -1, for good: find() stops a search only at a slot never used, so as the sweeps went on
+ * the table filled with tombstones and every key not in it - each new effect's draw: a KO's confetti, the Smash Ball,
+ * items, a zoomed-out camera's extra draws - looked at all 16384 slots, ~1 MB, for each of its constant buffers. A
+ * play.log of an offline 240 fight: the drawing thread's constant-buffer work 1.3 us a buffer at the start, 16 us five
+ * minutes on, the thread busy all the time and the pictures down to 78 a second - the logic, a quarter of them, in slow
+ * motion. Rebuilt here every sweep: no tombstones, and a miss stops at the first empty slot again.) */
+enum { PROBES = 64 };   /* (a search's longest run: past it the key is taken as not kept - drawn as the game's own) */
+static Entry rebuilt[ENTRIES];
+static void sweep(void) {
+    u32 kept = 0;
+    memset(rebuilt, 0, sizeof rebuilt);
     for (u32 i = 0; i < ENTRIES; i++) {
         Entry *e = &table[i];
-        if (e->used == 1 && pictures - e->seen > STALE) { free(e->last); free(e->prev); memset(e, 0, sizeof *e); e->used = -1; entries--; }
+        if (e->used != 1) continue;
+        if (pictures - e->seen > STALE) { free(e->last); free(e->prev); continue; }
+        u32 j = (u32)(e->key >> 17) & (ENTRIES - 1);
+        u32 run = 0;
+        while (rebuilt[j].used && run < PROBES) { j = (j + 1) & (ENTRIES - 1); run++; }   /* (fewer than ENTRIES * 3 / 4 live: room) */
+        if (run >= PROBES) { free(e->last); free(e->prev); continue; }   /* (find() would not reach it: its history starts again) */
+        rebuilt[j] = *e;
+        kept++;
     }
+    memcpy(table, rebuilt, sizeof table);
+    entries = kept;
 }
 
 static void picture_done(void) {
@@ -129,7 +150,7 @@ void motion_dispatch(u64 program) { motion_draw(program, 0xC0C0, 0, 0, 0); }
 
 static Entry *find(u64 key, int make) {
     u32 i = (u32)(key >> 17) & (ENTRIES - 1), free_at = ~0u;
-    for (u32 probes = 0; probes < ENTRIES; probes++, i = (i + 1) & (ENTRIES - 1)) {
+    for (u32 probes = 0; probes < PROBES; probes++, i = (i + 1) & (ENTRIES - 1)) {
         Entry *e = &table[i];
         if (e->used == 1 && e->key == key) return e;
         if (e->used != 1 && free_at == ~0u) free_at = i;
@@ -166,7 +187,7 @@ const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, 
         e->last = malloc(size); e->prev = malloc(size);
         if (!e->last || !e->prev) { free(e->last); free(e->prev); e->last = e->prev = NULL; e->size = 0; return NULL; }
         memcpy(e->last, scratch, size); memcpy(e->prev, scratch, size);
-        e->size = size; e->passes = 0; e->live = 1; e->cut = 0;
+        e->size = size; e->passes = 0; e->live = 1; e->cut = 0; e->moving = 0;
         return NULL;
     }
     float per = rt_passes_per_logic > 1 ? rt_passes_per_logic : (float)rt_refresh_mult;
@@ -176,6 +197,7 @@ const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, 
         u32 changed = 0, jumps = 0;
         for (u32 k = 0; k < n; k++) if (now[k] != last[k]) { changed++; jumps += !smooth(last[k], now[k]); }
         e->live = (float)(e->passes + 1) < per * 0.75f;   /* (changed again sooner than a logic frame lasts) */
+        e->moving = (float)(e->passes + 1) <= per * 1.25f;  /* (and changed a logic frame before too: in motion, not a step from rest) */
         e->cut = jumps * 3 > changed;
         memcpy(e->prev, e->cut ? scratch : e->last, size);   /* (a cut: nothing to blend from) */
         memcpy(e->last, scratch, size);
@@ -187,6 +209,12 @@ const void *motion_block(int compute, u32 bank, u32 tex_bank, u64 va, u32 size, 
     if (a > 1) a = 1;
     int extrapolate = display_motion() == 2;
     if ((extrapolate && a <= 0) || (!extrapolate && a >= 1)) return NULL;   /* (the game's own picture) */
+    /* (extrapolate: only while the buffer is in motion, and only until the next logic frame is due. Until 2026-11-28 a
+     * buffer that stopped stayed drawn a whole step past its last state - a still Steve a few pixels above the block a
+     * nil2 put under him, until he moved - and a single step from rest, as when a model shows one of its parts by moving
+     * it out of another (Steve's face and eyes swapping expression in a taunt), was carried on past where the game put
+     * it: two faces at once. Both now draw the game's newest state - never an older one, so no delay is added.) */
+    if (extrapolate && (a >= 1 || !e->moving)) return NULL;
     const u32 *prev = (const u32 *)e->prev;
     u32 *o = (u32 *)out;
     for (u32 k = 0; k < n; k++) {
