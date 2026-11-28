@@ -2025,86 +2025,22 @@ static volatile LONG jobs_pending;
 static u32 nmakers;
 
 /* ---- the compiling threads: what they make (crash reports, SSBU_VK_SKIP_PIPE) and a landing past their stacks' top ----
- * The commonest graphics crash of 0.5.3 on GeForce RTX 50 cards (5060 to 5070 Ti, drivers 610 to 621): NVIDIA's shader
- * compiler (nvgpucomp64.dll, called by the Vulkan driver nvoglv64.dll) reads 0 to 8 bytes PAST THE TOP of the stack of
- * the thread that asked for the pipeline - "reading address <stack top + 0/4/8>", "not a guest address", with the stack
- * pointer some 16 to 18 KB below that top every time. Those threads are ours (seen in the reports: a pool of as many
- * threads as makers_start starts, its others waiting for jobs; and the addresses fall on the 64 MB grid of the
- * makers' and warm threads' stacks, one reserved right after another, so the page past one stack's top is the
- * uncommitted bottom of the next one's). On a thread with more frames above the driver's, the same read would land
- * in that thread's own stack and go unnoticed - an inference, the driver's code was not looked at. It came in play
- * (the warm start capped at WARM_CAPPED_MB and long finished) as well as during warm starts.
- *
- * SSBU_VK_STACK_LANDING (default 1; 0: as before): each thread that makes pipelines (the makers, the warm threads,
- * the preparation) first puts readable zero memory right past the top of its stack: a 64 KB block of its own where
- * that address space is free, or, where the bottom of another of these threads' stacks is there (never used: the
- * stacks are 64 MB and their bottom pages are only reached by an overflow), that one page committed read-only. The
- * threads are started one at a time, each once it has done so, so the next one's stack is not put in that place first.
- * Nothing else changes; a stray read there now reads zeros. Whether that is enough for the driver to go on is not
- * known (not reproduced here: no RTX 50 card).
+ * NVIDIA's shader compiler on GeForce RTX 50 cards (nvgpucomp64.dll) reads past the top of the stack of the thread that
+ * asked for the pipeline: each thread that makes pipelines (the makers, the warm threads, the preparation) is started
+ * with readable memory past its stack's top, SSBU_VK_STACK_LANDING (gpu_vk_landing.c: what the reports showed, the
+ * modes, the fill; 1 is #629's 64 KB of zeros, 2 the default since 0.5.5).
  *
  * The pipeline each such thread is making is noted too (two stores around the driver's call; no log line), and a
  * crash or freeze report lists them (vk_report_compiles): its record sum (the 8 hex digits the warm list's groups
  * and the "made in play" lines name) and its programs' hashes. SSBU_VK_SKIP_PIPE=<sum or program hash>[,...]: those
  * pipelines (and compute programs) are not given to the driver, in the warm start or in play; a draw that needs one
  * is skipped, as one whose pipeline the driver could not make. Unset: nothing skipped. */
-static int stack_landing_on(void) {
-    static int v = -1;
-    if (v < 0) { const char *e = getenv("SSBU_VK_STACK_LANDING"); v = !(e && *e == '0'); }
-    return v;
-}
-#define LANDING_BYTES 0x10000
-static void *volatile compile_stacks[256];   /* (the allocation bases of these threads' stacks) */
-static volatile LONG ncompile_stacks;
-static volatile LONG64 landing_own, landing_shared, landing_none;
-static void stack_landing(void) {
-    if (!stack_landing_on()) return;
-    u8 *top = (u8 *)((NT_TIB *)NtCurrentTeb())->StackBase;
-    MEMORY_BASIC_INFORMATION mine, above;
-    if (VirtualQuery(top - 1, &mine, sizeof mine)) {
-        LONG i = InterlockedIncrement(&ncompile_stacks) - 1;
-        if (i < (LONG)(sizeof compile_stacks / sizeof *compile_stacks)) compile_stacks[i] = mine.AllocationBase;
-    }
-    if (!VirtualQuery(top, &above, sizeof above)) { InterlockedIncrement64(&landing_none); return; }
-    if (above.State == MEM_FREE && above.RegionSize >= LANDING_BYTES && VirtualAlloc(top, LANDING_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READONLY)) {
-        InterlockedIncrement64(&landing_own);
-        return;
-    }
-    if (above.State == MEM_COMMIT && (above.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-        InterlockedIncrement64(&landing_shared);   /* (readable already) */
-        return;
-    }
-    if (above.State == MEM_RESERVE && above.Type == MEM_PRIVATE && above.AllocationBase == (void *)top) {
-        LONG n = ncompile_stacks < (LONG)(sizeof compile_stacks / sizeof *compile_stacks) ? ncompile_stacks : (LONG)(sizeof compile_stacks / sizeof *compile_stacks);
-        for (LONG i = 0; i < n; i++)
-            if (compile_stacks[i] == (void *)top) {   /* (the bottom of another compiling thread's stack) */
-                if (VirtualAlloc(top, 0x1000, MEM_COMMIT, PAGE_READONLY)) { InterlockedIncrement64(&landing_shared); return; }
-                break;
-            }
-    }
-    InterlockedIncrement64(&landing_none);
-}
-typedef struct CompileStart { LPTHREAD_START_ROUTINE fn; void *arg; HANDLE ready; } CompileStart;
-static DWORD WINAPI compile_thread_main(void *p) {
-    CompileStart s = *(CompileStart *)p;
-    stack_landing();
-    SetEvent(s.ready);   /* (the creator's: it frees p once this is set) */
-    return s.fn(s.arg);
-}
+HANDLE vk_landing_thread(SIZE_T stack, DWORD flags, LPTHREAD_START_ROUTINE fn, void *arg);   /* gpu_vk_landing.c */
+void vk_landing_report(void (*line)(const char *text));
+int vk_landing_status(char *text, size_t n);
 /* CreateThread for a thread that makes pipelines: with SSBU_VK_STACK_LANDING its landing made before it is returned. */
 static HANDLE compile_thread(SIZE_T stack, DWORD flags, LPTHREAD_START_ROUTINE fn, void *arg) {
-    if (!stack_landing_on()) return CreateThread(NULL, stack, fn, arg, flags, NULL);
-    CompileStart *s = malloc(sizeof *s);
-    HANDLE ready = s ? CreateEventW(NULL, TRUE, FALSE, NULL) : NULL;
-    if (!ready) { free(s); return CreateThread(NULL, stack, fn, arg, flags, NULL); }
-    s->fn = fn; s->arg = arg; s->ready = ready;
-    HANDLE t = CreateThread(NULL, stack, compile_thread_main, s, flags, NULL);
-    if (t) {
-        HANDLE both[2] = {ready, t};
-        if (WaitForMultipleObjects(2, both, FALSE, 5000) == WAIT_TIMEOUT) s = NULL;   /* (not seen started: s left to it) */
-    }
-    if (s) { CloseHandle(ready); free(s); }
-    return t;
+    return vk_landing_thread(stack, flags, fn, arg);
 }
 
 /* What each compiling thread is making: a slot per thread, set before the driver's call and cleared after. */
@@ -6408,11 +6344,7 @@ static void vk_report_compiles(void (*line)(const char *text)) {
                  making[i].sum, (unsigned long long)making[i].vs, (unsigned long long)making[i].ps, (now - making[i].since) / 1000.0);
         line(text);
     }
-    if (stack_landing_on() && (landing_own || landing_shared || landing_none)) {
-        snprintf(text, sizeof text, "the compiling threads' landings past their stacks (SSBU_VK_STACK_LANDING): %lld of their own, %lld shared, %lld none\n",
-                 (long long)landing_own, (long long)landing_shared, (long long)landing_none);
-        line(text);
-    }
+    vk_landing_report(line);   /* (the landings past their stacks, and where a read past a top was: gpu_vk_landing.c) */
 }
 
 static void vk_status_lines(void) {
@@ -6446,6 +6378,10 @@ static void vk_status_lines(void) {
             vk_stat_learned, vk_stat_flushes, vk_ns_draw / 1e9, vk_ns_dispatch / 1e9, vk_ns_present / 1e9, vk_ns_wait / 1e9,
             vk_stat_local_blocks);
     present_spacing_report();
+    {
+        char said[300];
+        if (vk_landing_status(said, sizeof said)) fputs(said, stderr);   /* (a landing past a stack top grew: SSBU_VK_STACK_LANDING) */
+    }
     fprintf(stderr, "[status] vulkan launches' parts (s): program %.2f, constant buffers %.2f, storage buffers %.2f, set %.2f, recording %.2f, "
                     "learning's read-back %.2f; compute inputs taken again %llu (%llu MB)\n",
             vk_ns_launch[0] / 1e9, vk_ns_launch[1] / 1e9, vk_ns_launch[2] / 1e9, vk_ns_launch[3] / 1e9, vk_ns_launch[4] / 1e9, vk_ns_launch[5] / 1e9,
