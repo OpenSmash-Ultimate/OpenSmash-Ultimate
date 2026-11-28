@@ -1531,7 +1531,9 @@ namespace OpenSmash.Launcher
             {
                 int y = (int)Math.Round(ContentTop * s - 8 * s);
                 int height = H - y - (int)Math.Round(StatusH * s) - 1;
-                var bounds = new Rectangle(0, y, Math.Max(1, W), Math.Max(1, height));
+                // (inset by the resize band: the page would take the edge's mouse otherwise)
+                int grip = ResizeGrip;
+                var bounds = new Rectangle(grip, y, Math.Max(1, W - 2 * grip), Math.Max(1, height));
                 if (_marketplaceWebView.Bounds != bounds) _marketplaceWebView.Bounds = bounds;
                 if (!_marketplaceWebView.Visible) _marketplaceWebView.Visible = true;
                 _marketplaceWebView.BringToFront();

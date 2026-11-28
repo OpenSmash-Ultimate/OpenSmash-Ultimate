@@ -254,6 +254,9 @@ namespace OpenSmash.Launcher
             catch { }
 
             ClientSize = Theme.WindowSize();
+            // Resizable from its edges and corners (WndProc below), kept 16:9 - everything is drawn from the height.
+            float minScale = Theme.MonitorScale(Screen.PrimaryScreen!);
+            MinimumSize = new Size(Math.Min(ClientSize.Width, (int)(854 * minScale)), Math.Min(ClientSize.Height, (int)(480 * minScale)));
             // Moved to a monitor with other scaling: take the size Windows suggests; the drawing follows the height.
             DpiChanged += (s, e) => { Bounds = e.SuggestedRectangle; Invalidate(); };
             // Borderless forms sometimes skip the taskbar until clicked; APPWINDOW forces the button.
@@ -2416,6 +2419,42 @@ namespace OpenSmash.Launcher
                 cp.ExStyle |= WsExAppWindow;
                 return cp;
             }
+        }
+
+        // The borderless window resizes from a thin band along its edges, and keeps 16:9 while it does.
+        const int ResizeGripPx = 6;
+        int ResizeGrip => Math.Max(4, (int)Math.Round(ResizeGripPx * Math.Max(1f, DeviceDpi / 96f)));
+
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_NCHITTEST = 0x84, WM_SIZING = 0x214, HTCLIENT = 1;
+            if (m.Msg == WM_NCHITTEST && WindowState == FormWindowState.Normal)
+            {
+                base.WndProc(ref m);
+                if ((int)m.Result != HTCLIENT) return;
+                long lp = m.LParam.ToInt64();
+                var p = PointToClient(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
+                int grip = ResizeGrip, w = ClientSize.Width, h = ClientSize.Height;
+                bool l = p.X < grip, r = p.X >= w - grip, t = p.Y < grip, b = p.Y >= h - grip;
+                int hit = t && l ? 13 : t && r ? 14 : b && l ? 16 : b && r ? 17 : l ? 10 : r ? 11 : t ? 12 : b ? 15 : 0;
+                if (hit != 0) m.Result = (IntPtr)hit;
+                return;
+            }
+            if (m.Msg == WM_SIZING)
+            {
+                // wParam: the edge dragged (WMSZ_LEFT 1 .. WMSZ_BOTTOMRIGHT 8). The other dimension follows at 16:9.
+                var rc = Marshal.PtrToStructure<RECT>(m.LParam);
+                int edge = m.WParam.ToInt32();
+                int width = Math.Max(MinimumSize.Width, rc.Right - rc.Left), height = Math.Max(MinimumSize.Height, rc.Bottom - rc.Top);
+                if (edge is 3 or 6) width = (int)Math.Round(height * 16.0 / 9.0);   // (top, bottom: the height leads)
+                else height = (int)Math.Round(width * 9.0 / 16.0);                   // (sides and corners: the width leads)
+                if (edge is 1 or 4 or 7) rc.Left = rc.Right - width; else rc.Right = rc.Left + width;
+                if (edge is 3 or 4 or 5) rc.Top = rc.Bottom - height; else rc.Bottom = rc.Top + height;
+                Marshal.StructureToPtr(rc, m.LParam, false);
+                m.Result = (IntPtr)1;
+                return;
+            }
+            base.WndProc(ref m);
         }
 
         float Press(string id) => _pressed == id ? 1f : 0f;
