@@ -411,6 +411,10 @@ def set_on(tree, on, log=print):
             state["mods"][m]["enabled"] = bool(on)
             state["mods"][m].setdefault("title", "HewDraw Remix" if m in MODS else "HewDraw Remix (motion lists)")
     state["order"] = [m for m in own if m in state["mods"]] + [n for n in state["order"] if n not in own]
+    if on:   # (HDR with the user's mods, asked for here: mods.Tree.load keeps HDR's folders off in Play otherwise)
+        state["hdr_in_play"] = True
+    else:
+        state.pop("hdr_in_play", None)
     tree.save(state)
     if installed(tree):
         stage_plugins(tree)

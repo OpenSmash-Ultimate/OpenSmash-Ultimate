@@ -187,6 +187,18 @@ class Tree:
             for n, m in state["mods"].items():
                 if n not in allowed:
                     m["enabled"] = False
+        # HDR's folders are Play mods only when HDR itself was turned on with the user's mods (hdr.py on: "hdr_in_play").
+        # Turned on any other way - a launcher's resync or a stray switch - they were in every Play game, and their files
+        # went into the select screen and dump/skyline/hidden.txt (HDR's own select screen hidden in HDR mode too): off.
+        if not state.get("hdr_in_play") and os.path.isfile(os.path.join(self.root, "dump", "hdr", "installed.json")):
+            stray = [n for n in HDR_FOLDERS if state["mods"].get(n, {}).get("enabled")]
+            for n in stray:
+                state["mods"][n]["enabled"] = False
+            if stray:
+                try:
+                    self.save(state)
+                except OSError:
+                    pass
         return state
 
     def save(self, state):

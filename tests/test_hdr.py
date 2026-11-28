@@ -86,6 +86,25 @@ class HdrSwitch(unittest.TestCase):
         self.assertFalse(any(state['mods'][m]['enabled'] for m in hdr.MODS))
         self.assertTrue(state['mods']['My Skin']['enabled'])
 
+    def test_switched_on_elsewhere_stays_off_in_play(self):
+        """HDR's folders switched on by another launcher's resync (not hdr.py on): off again, so Play has no HDR and
+        its select screen is not hidden in dump/skyline/hidden.txt."""
+        self.install()
+        state = self.tree.load()
+        for m in hdr.MODS:
+            state['mods'][m]['enabled'] = True
+        self.tree.save(state)
+        state = self.tree.load()
+        self.assertFalse(any(state['mods'][m]['enabled'] for m in hdr.MODS))
+        self.assertTrue(state['mods']['My Skin']['enabled'])
+        with open(self.tree.state_path, encoding='utf-8') as f:   # (written back: a launcher reading the file sees it off)
+            saved = json.load(f)
+        self.assertFalse(any(saved['mods'][m]['enabled'] for m in hdr.MODS))
+        hdr.set_on(self.tree, True, lambda s: None)   # (asked for: HDR with the user's mods)
+        self.assertTrue(all(self.tree.load()['mods'][m]['enabled'] for m in hdr.MODS))
+        hdr.set_on(self.tree, False, lambda s: None)
+        self.assertNotIn('hdr_in_play', self.tree.load())
+
     def test_remove(self):
         self.install()
         hdr.set_on(self.tree, True, lambda s: None)
