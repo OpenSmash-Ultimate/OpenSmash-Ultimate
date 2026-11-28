@@ -196,5 +196,136 @@ class HdrOnly(unittest.TestCase):
         os_mods.set_switches(self.tree, ['hdr'], True)   # (HDR's own: fine)
 
 
+class HdrMotion(unittest.TestCase):
+    """tools/hdr_motion.py: HDR's motion_patch.yaml applied to the game's motion lists ahead of time (on the
+    console its plugin does it as the lists load; here that never ran, and HDR's new moves T-posed)."""
+    PATCH = """\
+# Ridley
+attack_air_lw:
+  extra:
+    cancel_frame: 40   # (a comment)
+special_air_lw_pogo:
+  game_script: game_specialairlwpogo
+  flags:
+    loop: false
+    unk_80: true
+  blend_frames: 0
+  animations:
+  - name: d03specialairlwpogo.nuanmb
+  scripts:
+  - expression_specialairlwpogo
+  - sound_specialairlwpogo
+  extra:
+    intangible_start_frame: 0
+    intangible_end_frame: 0
+    cancel_frame: 70
+    freeze_during_hitstop: false
+wait:
+  flags:
+    loop: true
+attack_air_lw:
+  extra:
+    cancel_frame: 41
+"""
+
+    def setUp(self):
+        import hdr_motion
+        self.hm = hdr_motion
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / 'mods' / 'My Skin' / 'fighter').mkdir(parents=True)
+        self.tree = mods.Tree(str(self.root))
+        for m in hdr.MODS:
+            (self.root / 'mods' / m / 'fighter').mkdir(parents=True)
+        body = self.root / 'mods' / 'hdr' / 'fighter' / 'ridley' / 'motion' / 'body'
+        body.mkdir(parents=True)
+        (body / 'motion_patch.yaml').write_text(self.PATCH)
+        anims = self.root / 'mods' / 'hdr-assets' / 'fighter' / 'ridley' / 'motion' / 'body' / 'c00'
+        anims.mkdir(parents=True)
+        (anims / 'd03specialairlwpogo.nuanmb').write_bytes(b'ANIM')
+        keep = self.root / 'dump' / 'hdr' / 'plugins'
+        keep.mkdir(parents=True)
+        for p in hdr.PLUGINS:
+            (keep / p).write_bytes(b'NRO')
+        (self.root / 'dump' / 'hdr' / 'installed.json').write_text(json.dumps({'version': hdr.VERSION}))
+        h = hdr_motion.hash40
+        m = hdr_motion.default_motion
+        wait = dict(m(), game_script=h('game_wait'), animations=[(h('a00wait1.nuanmb'), 0)])
+        air = dict(m(), game_script=h('game_attackairlw'), flags=0x80, animations=[(h('c05attackairlw.nuanmb'), 1)],
+                   scripts=[h('effect_attackairlw'), h('sound_attackairlw')], extra=(0, 0, 54, False))
+        self.vanilla = hdr_motion.write(h('fighter/ridley/motion/body'), {h('wait'): wait, h('attack_air_lw'): air})
+        self.asked = []
+
+        def get(path):
+            self.asked.append(path)
+            return self.vanilla if path == 'fighter/ridley/motion/body/c00/motion_list.bin' else None
+        self.games = mock.patch.object(hdr_motion, 'game_files', lambda tree: get)
+        self.games.start()
+
+    def tearDown(self):
+        self.games.stop()
+        self.tmp.cleanup()
+
+    def enabled(self):
+        return {n for n, m in self.tree.load()['mods'].items() if m.get('enabled')}
+
+    def test_the_file_format_round_trips(self):
+        path, motions = self.hm.read(self.vanilla)
+        self.assertEqual(self.hm.write(path, motions), self.vanilla)
+
+    def test_the_patch_as_the_console_applies_it(self):
+        h = self.hm.hash40
+        _path, motions = self.hm.read(self.vanilla)
+        new = self.hm.apply(motions, self.hm.load_patch(self.PATCH))
+        self.assertEqual(list(new), sorted(new))   # (sorted by hash40, as motion-patch leaves it)
+        pogo = new[h('special_air_lw_pogo')]   # (a new move: its animation, scripts and frame data)
+        self.assertEqual(pogo['game_script'], h('game_specialairlwpogo'))
+        self.assertEqual(pogo['animations'], [(h('d03specialairlwpogo.nuanmb'), 0)])
+        self.assertEqual(pogo['scripts'], [h('expression_specialairlwpogo'), h('sound_specialairlwpogo')])
+        self.assertEqual(pogo['flags'], 0x80)
+        self.assertEqual(pogo['extra'], (0, 0, 70, False))
+        air = new[h('attack_air_lw')]   # (a key twice: the last one; the rest of the motion as it was)
+        self.assertEqual(air['extra'], (0, 0, 41, False))
+        self.assertEqual(air['animations'], [(h('c05attackairlw.nuanmb'), 1)])
+        self.assertEqual(new[h('wait')]['flags'], 0x2)   # (one flag changed, the others kept)
+
+    def test_remove_leaves_a_default_motion_as_motion_patch_does(self):
+        h = self.hm.hash40
+        _path, motions = self.hm.read(self.vanilla)
+        new = self.hm.apply(motions, self.hm.load_patch("wait:\n  remove: true\n"))
+        self.assertEqual(new[h('wait')], self.hm.default_motion())
+
+    def test_hdr_mode_writes_and_turns_on_the_motion_lists(self):
+        self.assertTrue(hdr.set_only(self.tree, True, lambda s: None))
+        lists = self.root / 'mods' / 'hdr-motion' / 'fighter' / 'ridley' / 'motion' / 'body'
+        self.assertEqual(sorted(os.listdir(lists)), [f'c{i:02d}' for i in range(8)])
+        _p, motions = self.hm.read((lists / 'c03' / 'motion_list.bin').read_bytes())
+        self.assertIn(self.hm.hash40('special_air_lw_pogo'), motions)
+        self.assertEqual(self.enabled(), set(hdr.MODS) | {'hdr-motion'})   # (HDR only allows it too)
+        self.assertEqual(self.tree.load()['order'][:4], list(hdr.MODS) + ['hdr-motion'])   # (after HDR's: it wins)
+        self.assertFalse(hdr.bake_motion(self.tree, lambda s: None))   # (as it is: not written again)
+        n = len(self.asked)
+        y = self.root / 'mods' / 'hdr' / 'fighter' / 'ridley' / 'motion' / 'body' / 'motion_patch.yaml'
+        y.write_text(self.PATCH + "fall:\n  blend_frames: 3\n")
+        self.assertTrue(hdr.bake_motion(self.tree, lambda s: None))   # (HDR updated: again)
+        self.assertGreater(len(self.asked), n)
+        self.assertTrue(hdr.set_only(self.tree, False, lambda s: None))
+        self.assertNotIn('hdr-motion', self.enabled())   # (Play: off with HDR's mods)
+
+    def test_already_in_hdr_mode_before_this(self):
+        """HDR mode switched on by an OpenSmash without hdr_motion.py: hdr-only on writes the lists and allows them."""
+        import os_mods
+        state = self.tree.load()
+        state['hdr_only'] = {'enabled': {}, 'hdr_was_on': False, 'mods': list(hdr.MODS), 'plugins': list(hdr.ONLY_PLUGINS)}
+        for m in hdr.MODS:
+            state['mods'][m]['enabled'] = True
+        self.tree.save(state)
+        with mock.patch.object(mods, 'apply') as applied, mock.patch.object(os_mods, 'ROOT', str(self.root)), \
+                mock.patch.object(sys, 'stdout'):
+            os_mods.main(['os_mods.py', 'hdr-only', 'on'])
+        self.assertTrue(applied.called)
+        self.assertIn('hdr-motion', self.enabled())
+
+
 if __name__ == '__main__':
     unittest.main()

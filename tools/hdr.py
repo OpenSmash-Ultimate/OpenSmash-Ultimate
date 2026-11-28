@@ -10,6 +10,7 @@ Usage:
   hdr.py on|off   [--tree <dir>]     turn it on or off (then apply, and build plugins if asked)
   hdr.py only on|off [--tree <dir>]  HDR only (the launcher's HDR mode): HDR on, every other mod and community
                                      plugin off; off gives back what was on before
+  hdr.py motion   [--tree <dir>]     write HDR's motion lists again (mods/hdr-motion: tools/hdr_motion.py), then apply
   hdr.py remove   [--tree <dir>]     delete it
 
 The package is what a Switch's SD card takes. Of it: ultimate/mods/hdr, hdr-assets and hdr-stages go
@@ -18,6 +19,10 @@ where both change a file; ultimate/stage-alts goes on the plugins' SD card (dump
 plugins (stage_config, stage_alts) are kept in dump/hdr/plugins and put among the standard plugins
 (skyline/plugins) while HDR is on. The package's ARCropolis, Smashline and nro_hook are the standard
 plugins' own builds (std_plugins.py), and hdr-launcher (the console's updater) isn't used: left out.
+HDR's motion_patch.yaml files (new moves, changed frame data) are applied to the game's motion lists when it is
+turned on (tools/hdr_motion.py, into the mods folder hdr-motion, switched with HDR's): on the console its plugin
+does that as the lists load, which doesn't happen here - without it Ridley's aerial down special, Dark Samus'
+up special and HDR's other new moves T-posed.
 HDR isn't shipped with OpenSmash: each user downloads it from HDR's releases.
 
 HDR only (the launcher's third mode, beside Play and Vanilla): HDR changes every fighter, and a moveset
@@ -42,6 +47,7 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import hdr_motion  # noqa: E402
 import mods  # noqa: E402
 import std_plugins  # noqa: E402
 
@@ -60,6 +66,9 @@ PLUGIN_DIRS = (PLUGIN_DIR, "skyline/plugins/")
 # HDR only: the community plugins (skyline/plugins) that still load - ARCropolis reads HDR's files, Smashline
 # runs its fighters' code, nro_hook tells it of their modules - and HDR's stage plugins (PLUGINS)
 ONLY_PLUGINS = ("libarcropolis.nro", "libsmashline_plugin.nro", "libnro_hook.nro") + PLUGINS
+# HDR's motion_patch.yaml files applied ahead of time (tools/hdr_motion.py): a mods folder written here, right
+# after HDR's three in the order and on exactly when they are. Without it HDR's new moves T-pose
+MOTION = hdr_motion.FOLDER
 
 
 class Error(Exception):
@@ -78,6 +87,38 @@ def installed(tree):
     except (OSError, ValueError):
         return None
     return v if all(os.path.isdir(os.path.join(tree.mods, m)) for m in MODS) else None
+
+
+def own_mods(tree):
+    """HDR's mods in their order: its three, and the motion lists written for them once there."""
+    return MODS + ((MOTION,) if os.path.isdir(os.path.join(tree.mods, MOTION)) else ())
+
+
+def bake_motion(tree, log=print, force=False):
+    """mods/hdr-motion written again if HDR's motion patches (or the costume folders beside them) changed
+    since, or it's missing; switched like HDR's mods (and allowed in HDR only). Whether anything changed
+    (an apply is then due); None if HDR isn't installed."""
+    if not installed(tree):
+        return None
+    if not force and hdr_motion.current(tree, MODS):
+        return False
+    log("applying HDR's motion patches to the game's motion lists")
+    try:
+        hdr_motion.bake(tree, MODS, log)
+    except hdr_motion.Error as e:
+        raise Error(f"HDR's motion patches: {e}") from None
+    state = tree.load()   # (picks the folder up, off - switched here)
+    on = all(state["mods"].get(m, {}).get("enabled") for m in MODS)
+    only = state.get("hdr_only")
+    if isinstance(only, dict) and os.path.isdir(os.path.join(tree.mods, MOTION)):
+        only["mods"] = list(dict.fromkeys(list(only.get("mods") or MODS) + [MOTION]))
+    if MOTION in state["mods"]:
+        state["mods"][MOTION]["enabled"] = on
+        state["mods"][MOTION].setdefault("title", "HewDraw Remix (motion lists)")
+    own = own_mods(tree)
+    state["order"] = [m for m in own if m in state["mods"]] + [n for n in state["order"] if n not in own]
+    tree.save(state)
+    return True
 
 
 def status(tree):
@@ -250,12 +291,15 @@ def set_on(tree, on, log=print):
     plugin not compiled into the game yet) makes it so in the game."""
     if on and not installed(tree):
         raise Error("HDR isn't downloaded")
+    if on:
+        bake_motion(tree, log)
     state = tree.load()
-    for m in MODS:
+    own = own_mods(tree)
+    for m in own:
         if m in state["mods"]:
             state["mods"][m]["enabled"] = bool(on)
-            state["mods"][m].setdefault("title", "HewDraw Remix")
-    state["order"] = [m for m in MODS if m in state["mods"]] + [n for n in state["order"] if n not in MODS]
+            state["mods"][m].setdefault("title", "HewDraw Remix" if m in MODS else "HewDraw Remix (motion lists)")
+    state["order"] = [m for m in own if m in state["mods"]] + [n for n in state["order"] if n not in own]
     tree.save(state)
     plugins = std_plugins.folder(tree.root)
     os.makedirs(plugins, exist_ok=True)
@@ -283,10 +327,11 @@ def set_only(tree, on, log=print):
         kept = {n: bool(m.get("enabled")) for n, m in state["mods"].items()}
         set_on(tree, True, log)
         state = tree.load()
-        state["hdr_only"] = {"enabled": kept, "hdr_was_on": all(kept.get(m) for m in MODS), "mods": list(MODS),
+        own = own_mods(tree)
+        state["hdr_only"] = {"enabled": kept, "hdr_was_on": all(kept.get(m) for m in MODS), "mods": list(own),
                              "plugins": list(ONLY_PLUGINS)}
         for n, m in state["mods"].items():
-            m["enabled"] = n in MODS
+            m["enabled"] = n in own
         tree.save(state)
         log("HDR only: HewDraw Remix on, every other mod and community plugin off")
         return True
@@ -305,7 +350,7 @@ def remove(tree, log=print):
         set_only(tree, False, log)
     if installed(tree):
         set_on(tree, False, log)
-    for m in MODS:
+    for m in MODS + (MOTION,):
         shutil.rmtree(os.path.join(tree.mods, m), ignore_errors=True)
     for p in SD:
         shutil.rmtree(os.path.join(tree.root, "dump", "skyline", "sd", *p.strip("/").split("/")), ignore_errors=True)
@@ -321,7 +366,7 @@ def remove(tree, log=print):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("command", choices=("status", "download", "install", "on", "off", "only", "remove"))
+    ap.add_argument("command", choices=("status", "download", "install", "on", "off", "only", "motion", "remove"))
     ap.add_argument("what", nargs="?", help="install: the package (zip or folder); only: on or off")
     ap.add_argument("--tree", default=os.path.dirname(HERE))
     a = ap.parse_args()
@@ -342,6 +387,10 @@ def main():
             out = status(tree)
         elif a.command in ("on", "off"):
             out = set_on(tree, a.command == "on")
+        elif a.command == "motion":
+            if bake_motion(tree, force=True) is None:
+                raise Error("HDR isn't installed")
+            out = status(tree)
         else:
             out = remove(tree)
     except Error as e:

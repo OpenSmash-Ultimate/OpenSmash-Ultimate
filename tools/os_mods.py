@@ -373,6 +373,8 @@ def main(argv):
             if len(argv) < 3 or argv[2] not in ("on", "off"):
                 raise mods.Error("hdr-only on|off")
             changed = hdr.set_only(tree, argv[2] == "on", log)
+            if argv[2] == "on":   # (HDR mode already on: its motion lists written if they're missing or out of date)
+                changed = bool(hdr.bake_motion(tree, log)) or changed
             if changed:
                 mods.apply(tree, log)
             return result(True, changed=changed)
