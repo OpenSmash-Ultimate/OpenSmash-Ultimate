@@ -306,16 +306,44 @@ static void print_frames(void **frames, int n, int from_pc) {
 }
 
 #include "crash_blame.h"   /* (plugin_module: SSBU_CRASH_BLAME, below) */
+u64 rt_module_named(const char *name, u64 *image_size, u64 *text_size);
+static const char *loaded_copy(const char *plugin) {   /* (known_crash: the plugin, or a copy of it - plugin_, plugin__ ...) */
+    static char name[80];
+    for (int k = 0; k <= 4; k++) {
+        snprintf(name, sizeof name, "%s%.*s", plugin, k, "____");
+        if (rt_module_named(name, NULL, NULL)) return name;
+    }
+    return NULL;
+}
+
 /* After the crash report's first line: the plugin its innermost guest frames are in, when one of the first two is a
  * plugin's - " - in plugin X (X+0x...)" when the fault is in its code, " - in code called from plugin X (...)" when it
  * called the code that faulted (the game's or the runtime's). Field reports of 0.5.1-0.5.3 had a mod's plugin there
  * (its own code, or the game's called from it with what it passed) in about one crash in five; the launcher reads it
  * (OpenSmash.Core CrashBlame.cs) and suggests turning that mod off. Only the innermost two: a plugin deeper down is
- * on almost every stack of a modded game (Smashline runs the fighters' scripts) and says nothing. */
-static void crash_blame(void **frames, int n, int from_pc) {
+ * on almost every stack of a modded game (Smashline runs the fighters' scripts) and says nothing.
+ * Before those, a known crash (crash_blame.h known_crash, SSBU_CRASH_BLAME_KNOWN=0: not looked for): a null read in the
+ * game's code seen only with one plugin loaded (the CSK Collection's, 0.5.4's most common crash) ends the line
+ * " - with plugin X (a known crash with it loaded: main+0x...)". near_null: the fault is a read below 0x1000. */
+static void crash_blame(void **frames, int n, int from_pc, int near_null) {
     const char *e = getenv("SSBU_CRASH_BLAME");
     if (e && e[0] == '0') return;
     char name[96];
+    const char *k = getenv("SSBU_CRASH_BLAME_KNOWN");
+    if (near_null && !(k && k[0] == '0')) {
+        char described[KNOWN_DEPTH][96];
+        const char *list[KNOWN_DEPTH];
+        int nd = 0;
+        for (int i = 0; i < n && nd < KNOWN_DEPTH; i++) {
+            u64 guest = guest_of_frame((u64)frames[i], i == 0 && from_pc);
+            if (guest) list[nd] = rt_describe(guest, described[nd], sizeof described[nd]), nd++;
+        }
+        const char *module = NULL, *frame = NULL;
+        if (known_crash(list, nd, 1, loaded_copy, &module, &frame)) {
+            out(" - with plugin %s (a known crash with it loaded: %s)", module, frame);
+            return;
+        }
+    }
     for (int i = 0, seen = 0; i < n && seen < 2; i++) {
         u64 guest = guest_of_frame((u64)frames[i], i == 0 && from_pc);
         if (!guest) continue;
@@ -1177,7 +1205,8 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     if (code == EXCEPTION_ACCESS_VIOLATION)
         out(": %s address %s", e->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" : e->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
             rt_describe(e->ExceptionRecord->ExceptionInformation[1], name, sizeof name));
-    crash_blame(frames, nframes, 1);
+    crash_blame(frames, nframes, 1, code == EXCEPTION_ACCESS_VIOLATION && e->ExceptionRecord->ExceptionInformation[0] == 0 &&
+                                        e->ExceptionRecord->ExceptionInformation[1] < 0x1000);
     out("\n");
     if (rt_romfs_warning[0]) out("%s\n", rt_romfs_warning);   /* (hle_fs.c: wrong game data can be the cause) */
     /* (an address in guest memory that is not mapped: what the kernel's map says, and its recent changes there - the
@@ -1433,7 +1462,12 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
 #else
     if (sig == SIGSEGV || sig == SIGBUS) out(": %s address %s", writing ? "writing" : "reading", rt_describe(addr, name, sizeof name));
 #endif
-    crash_blame(frames + from, n - from, from_pc);
+#ifdef __APPLE__   /* (a guest's null pointer is the guest space's base here) */
+    u64 low = addr - RT_MEMBASE < ASPACE_BASE + ASPACE_SIZE ? H2G(addr) : addr;
+#else
+    u64 low = addr;
+#endif
+    crash_blame(frames + from, n - from, from_pc, (sig == SIGSEGV || sig == SIGBUS) && !writing && low < 0x1000);
     out("\n");
     if (rt_romfs_warning[0]) out("%s\n", rt_romfs_warning);   /* (hle_fs.c: wrong game data can be the cause) */
     out("host pc %#llx (thread %d %s):\n", pc, (int)me, rt_thread_description(me));
