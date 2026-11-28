@@ -76,11 +76,31 @@ void motion_frame(u64 mark) {
     ReleaseSRWLockExclusive(&marks_lock);
 }
 
-static void sweep(void) {   /* entries no draw has read for a while: freed */
+/* Entries no draw has read for a while: freed, and the table built again from the rest. (Until 2026-11-28 a freed
+ * entry stayed a tombstone, used -1, for good: find() stops a search only at a slot never used, so as the sweeps went on
+ * the table filled with tombstones and every key not in it - each new effect's draw: a KO's confetti, the Smash Ball,
+ * items, a zoomed-out camera's extra draws - looked at all 16384 slots, ~1 MB, for each of its constant buffers. A
+ * play.log of an offline 240 fight: the drawing thread's constant-buffer work 1.3 us a buffer at the start, 16 us five
+ * minutes on, the thread busy all the time and the pictures down to 78 a second - the logic, a quarter of them, in slow
+ * motion. Rebuilt here every sweep: no tombstones, and a miss stops at the first empty slot again.) */
+enum { PROBES = 64 };   /* (a search's longest run: past it the key is taken as not kept - drawn as the game's own) */
+static Entry rebuilt[ENTRIES];
+static void sweep(void) {
+    u32 kept = 0;
+    memset(rebuilt, 0, sizeof rebuilt);
     for (u32 i = 0; i < ENTRIES; i++) {
         Entry *e = &table[i];
-        if (e->used == 1 && pictures - e->seen > STALE) { free(e->last); free(e->prev); memset(e, 0, sizeof *e); e->used = -1; entries--; }
+        if (e->used != 1) continue;
+        if (pictures - e->seen > STALE) { free(e->last); free(e->prev); continue; }
+        u32 j = (u32)(e->key >> 17) & (ENTRIES - 1);
+        u32 run = 0;
+        while (rebuilt[j].used && run < PROBES) { j = (j + 1) & (ENTRIES - 1); run++; }   /* (fewer than ENTRIES * 3 / 4 live: room) */
+        if (run >= PROBES) { free(e->last); free(e->prev); continue; }   /* (find() would not reach it: its history starts again) */
+        rebuilt[j] = *e;
+        kept++;
     }
+    memcpy(table, rebuilt, sizeof table);
+    entries = kept;
 }
 
 static void picture_done(void) {
@@ -129,7 +149,7 @@ void motion_dispatch(u64 program) { motion_draw(program, 0xC0C0, 0, 0, 0); }
 
 static Entry *find(u64 key, int make) {
     u32 i = (u32)(key >> 17) & (ENTRIES - 1), free_at = ~0u;
-    for (u32 probes = 0; probes < ENTRIES; probes++, i = (i + 1) & (ENTRIES - 1)) {
+    for (u32 probes = 0; probes < PROBES; probes++, i = (i + 1) & (ENTRIES - 1)) {
         Entry *e = &table[i];
         if (e->used == 1 && e->key == key) return e;
         if (e->used != 1 && free_at == ~0u) free_at = i;
