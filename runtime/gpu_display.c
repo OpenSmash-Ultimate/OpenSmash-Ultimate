@@ -73,6 +73,7 @@ static struct {
 static int cfg_runahead;   /* display.ini's runahead (display_runahead) */
 static int cfg_frame_rate = 60;   /* display.ini's frame_rate: 60, 120 or 240 (display_frame_rate) */
 static int cfg_motion;             /* display.ini's motion: 0 off, 1 interpolate, 2 extrapolate (display_motion) */
+static int cfg_frame_gen;          /* display.ini's frame_gen: 0 off, 1 on (display_frame_gen) */
 
 static const char DEFAULT_INI[] =
     "; display.ini: the game's window and the pacing of its frames. Read when the game starts; the\n"
@@ -141,6 +142,10 @@ static const char DEFAULT_INI[] =
     ";   is the same). interpolate: smooth, each logic frame fully shown when a 60 frames a second picture would show it.\n"
     ";   extrapolate: no later than the game's own picture, guessing ahead (a slight overshoot when something turns at once).\n"
     "motion = off\n"
+    "; frame_gen = off | on (testing, Vulkan): with frame_rate 120 or 240, the game draws a picture only once a logic frame\n"
+    ";   (as at 60) and the pictures between are its last one drawn again, the characters and the camera moved ahead\n"
+    ";   (extrapolated). Much less work for the processor on busy stages; the logic and its input timing are unchanged.\n"
+    "frame_gen = off\n"
     "; latency = 1-3: how many frames the graphics card may work ahead. Lower is more responsive.\n"
     ";   (the Vulkan renderer keeps 2 at least: with 1 the processor and the card wait for each other every frame)\n"
     "latency = 3\n"
@@ -326,6 +331,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
         else if (!_stricmp(key, "pacing")) parse_pacing(value);
         else if (!_stricmp(key, "frame_rate")) cfg_frame_rate = parse_frame_rate(value, path);
         else if (!_stricmp(key, "motion")) cfg_motion = parse_motion(value, path);
+        else if (!_stricmp(key, "frame_gen")) cfg_frame_gen = !_stricmp(value, "on") || !_stricmp(value, "1") || !_stricmp(value, "true");
         else if (!_stricmp(key, "latency")) cfg.latency = atoi(value);
         else if (!_stricmp(key, "low_latency")) cfg.low_latency = atoi(value) != 0;
         else if (!_stricmp(key, "runahead")) (void)value;   /* (ignored: run-ahead is off for everyone, issue #250; SSBU_RUNAHEAD only) */
@@ -364,6 +370,7 @@ static BOOL CALLBACK load_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     if ((env = getenv("SSBU_PACING")) && *env) parse_pacing(env);
     if ((env = getenv("SSBU_FRAME_RATE")) && *env) cfg_frame_rate = parse_frame_rate(env, "SSBU_FRAME_RATE");
     if ((env = getenv("SSBU_MOTION")) && *env) cfg_motion = parse_motion(env, "SSBU_MOTION");
+    if ((env = getenv("SSBU_FRAME_GEN")) && *env) cfg_frame_gen = !_stricmp(env, "on") || atoi(env) > 0;
     if ((env = getenv("SSBU_LOW_LATENCY")) && *env) cfg.low_latency = atoi(env) != 0;
     if ((env = getenv("SSBU_WINDOW_SIZE")) && *env) sscanf(env, "%dx%d", &cfg.width, &cfg.height);
     if ((env = getenv("SSBU_RENDER_SCALE")) && *env) parse_render_scale(env);
@@ -402,6 +409,7 @@ int display_frame_rate(void) { load(); return saved_frame_rate > 0 ? (int)saved_
 static volatile LONG saved_motion = -1;
 int display_motion(void) { load(); return saved_motion >= 0 ? (int)saved_motion : cfg_motion; }
 void display_set_motion(int mode) { InterlockedExchange(&saved_motion, mode < 0 ? 0 : mode > 2 ? 2 : mode); }
+int display_frame_gen(void) { load(); return cfg_frame_gen; }
 void display_set_frame_rate(int fps) { InterlockedExchange(&saved_frame_rate, fps >= 240 ? 240 : fps >= 120 ? 120 : 60); }
 int net_match_now(void);     /* (host.c: a networked match set up or under way) */
 /* The refreshes the game sees in a 60 Hz frame now: frame_rate / 60, but 1 while a networked match is set up or under way
@@ -409,6 +417,28 @@ int net_match_now(void);     /* (host.c: a networked match set up or under way) 
  * frames), with SSBU_SPEED (its refresh per frame shown) and with run-ahead (SSBU_RUNAHEAD: a pass is a logic frame). */
 volatile int display_frame_rate_refused;   /* (hle_frame_rate.c: not this game's build or speed table: 60 stays) */
 int game_fight_on(void);     /* (hle_fight_test.c) */
+/* A movie (a Final Smash's, the menus') while frame_rate is above 60: the game's movie player is paced by its main loop's
+ * passes as at 60, so at 240 refreshes a second it decoded 8 pictures a second instead of 24 and the movie crawled (and
+ * ran too fast when a heavy stage made the PC miss refreshes): 2026-11-28 play.log, [movie] pace. So while the video
+ * decoder works (gpu_host1x.c calls display_movie_job at each decode job) the game runs at 60 a second, and goes back
+ * to frame_rate a second and a half after the last job. SSBU_MOVIE_AT_60=0: left at frame_rate. */
+static volatile long long movie_job_at;   /* (rt_now_ns of the last decode job; 0: none yet) */
+void display_movie_job(void) { movie_job_at = (long long)rt_now_ns(); }
+int display_movie_playing(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("SSBU_MOVIE_AT_60"); on = !(e && *e == '0'); }
+    long long at = movie_job_at;
+    if (!on || !at) return 0;
+    long long since = (long long)rt_now_ns() - at;
+    static volatile int said;
+    int playing = since >= 0 && since < 1500000000ll;
+    if (playing != said) {
+        said = playing;
+        fprintf(stderr, playing ? "[movie] a movie plays: the game at its own 60 frames a second until it ends\n"
+                                : "[movie] the movie ended: frame_rate again\n");
+    }
+    return playing;
+}
 int display_refresh_mult(void) {
     load();
     int fps = display_frame_rate(), m = fps >= 240 ? 4 : fps >= 120 ? 2 : 1;
@@ -422,6 +452,7 @@ int display_refresh_mult(void) {
     static volatile int net_fight;   /* (a networked match seen: 60 until its fight is over, even if the match flag drops mid-fight) */
     if (net_match_now()) { net_fight = 1; return 1; }
     if (net_fight) { if (game_fight_on()) return 1; net_fight = 0; }
+    if (display_movie_playing()) return 1;   /* (a movie: at the game's own 60, display_movie_job) */
     return m;
 }
 Pacing display_pacing(void) { load(); return cfg.pacing; }

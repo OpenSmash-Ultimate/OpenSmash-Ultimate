@@ -514,14 +514,49 @@ static void vic_execute(Engine *e) {
 #endif
 }
 
+/* A movie's pace (2026-11-28, a Final Smash movie playing slowly at 240 while the game kept its speed: its decode jobs
+ * came in bursts, over 250 ms apart): each movie's decode and VIC jobs timed, and summed up once it has had none for
+ * a second, and every 2 s while it plays - the jobs a second, the longest gap between two, the decode's own time.
+ * SSBU_LOG_MOVIE_PACE=0: not logged. */
+static struct { u64 first, last, longest, decode_ns, decode_max, last_vic; u32 jobs, vics, gaps_over_50; } pace;
+static void pace_say(void) {
+    if (!pace.jobs) return;
+    double secs = (double)(pace.last - pace.first) / 1e9;
+    fprintf(stderr, "[movie] pace: %u decode jobs in %.2f s (%.1f a second), %u VIC jobs; the longest gap %.1f ms, %u gaps over 50 ms; "
+                    "decoding %.2f ms a job on average, %.2f ms at most\n",
+            pace.jobs, secs, secs > 0 ? pace.jobs / secs : 0.0, pace.vics, pace.longest / 1e6, pace.gaps_over_50,
+            pace.decode_ns / 1e6 / pace.jobs, pace.decode_max / 1e6);
+    memset(&pace, 0, sizeof pace);
+}
+static int pace_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *v = getenv("SSBU_LOG_MOVIE_PACE"); on = !(v && *v == '0'); }
+    return on;
+}
 static void method(Engine *e, u32 m, u32 arg) {
     if (m < METHODS) e->regs[m] = arg;
     if (m != 0xC0) return;   /* Execute */
     record(e);
+    u64 t0 = pace_on() ? rt_now_ns() : 0;
+    if (t0 && pace.last && (t0 - pace.last > 1000000000ull || t0 - pace.first > 2000000000ull)) pace_say();   /* (the last movie ended a second ago, or 2 s of this one) */
+    if (e->cls == CLASS_NVDEC) { void display_movie_job(void); display_movie_job(); }   /* (gpu_display.c: a movie plays at 60) */
 #ifdef SSBU_HAVE_VPX
     if (e->cls == CLASS_NVDEC) nvdec_execute(e);
 #endif
     if (e->cls == CLASS_VIC) vic_execute(e);
+    if (!t0) return;
+    u64 t1 = rt_now_ns();
+    if (e->cls == CLASS_NVDEC) {
+        if (!pace.first) pace.first = t0;
+        if (pace.last) {
+            u64 gap = t0 - pace.last;
+            if (gap > pace.longest) pace.longest = gap;
+            if (gap > 50000000ull) pace.gaps_over_50++;
+        }
+        pace.last = t0; pace.jobs++;
+        pace.decode_ns += t1 - t0;
+        if (t1 - t0 > pace.decode_max) pace.decode_max = t1 - t0;
+    } else if (e->cls == CLASS_VIC && pace.first) pace.vics++;
 }
 
 /* ---- command buffers -------------------------------------------------------------- */
