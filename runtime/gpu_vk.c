@@ -6491,6 +6491,7 @@ static void *vk_display_output(void) {
  * new pipelines are made, never during a fight (the driver's export of a 100 MB cache competes with the
  * fight's own pipeline making), and at the end. */
 int game_fight_on(void);   /* (hle_fight_test.c) */
+static volatile size_t pipeline_cache_kept;   /* (the file's size, loaded or last saved: vk_closing) */
 static void pipeline_cache_save(void) {
     u64 t0 = rt_clock_ns();
     size_t size = 0;
@@ -6504,6 +6505,7 @@ static void pipeline_cache_save(void) {
         if (f) {
             int ok = fwrite(data, 1, size, f) == size;
             if (fclose(f) || !ok || !MoveFileExA(tmp, pipeline_cache_path, MOVEFILE_REPLACE_EXISTING)) DeleteFileA(tmp);
+            else pipeline_cache_kept = size;
         }
     }
     free(data);
@@ -6523,10 +6525,24 @@ static void pipeline_cache_tick(void) {
     job_add(&job);
 }
 
+/* (v0.5.5) At the close the cache is saved once, and not when it is the file's already: the Quit (the renderer's
+ * thread) and a WM_CLOSE meanwhile (the window's, a player clicking the window's X while the Quit saves) each saved it
+ * before - two exports of a 400-1200 MB cache into the same .tmp at once - and a close with nothing new made since
+ * the last save (vkGetPipelineCacheData's size the file's) wrote it all again (0.5.4: 1-27 s). A second close waits
+ * for the first's save (up to 30 s), which ExitProcess would otherwise cut. SSBU_VK_CACHE_QUIT=0: as before. */
 static void vk_closing(void) {
     /* (Closed while it warms: the threads make no more, and the marker goes - a close is not a warm start that died.) */
     if (warm_running) { InterlockedExchange(&warm_stopped, 1); DeleteFileA(warm_marker); }
-    if (!saving) pipeline_cache_save();
+    const char *v = getenv("SSBU_VK_CACHE_QUIT");
+    if (v && *v == '0') { if (!saving) pipeline_cache_save(); return; }
+    static volatile LONG closing;   /* (1: a close is saving, 2: done) */
+    if (InterlockedCompareExchange(&closing, 1, 0)) { for (int i = 0; i < 600 && closing != 2; i++) Sleep(50); return; }
+    size_t size = 0;
+    if (saving) {}   /* (a minute's save under way: the file stays whole either way) */
+    else if (pipeline_cache && pipeline_cache_kept && vkGetPipelineCacheData(device, pipeline_cache, &size, NULL) == VK_SUCCESS && size == pipeline_cache_kept)
+        fprintf(stderr, "[vulkan] pipeline cache unchanged (%.1f MB): not saved again\n", size / 1048576.0);
+    else pipeline_cache_save();
+    InterlockedExchange(&closing, 2);
 }
 
 static const GfxBackend VULKAN = {
@@ -6608,6 +6624,7 @@ static int draw_objects(void) {
         if (vkCreatePipelineCache(device, &pcci, NULL, &pipeline_cache) != VK_SUCCESS) pipeline_cache = VK_NULL_HANDLE;
     }
     if (initial_size) fprintf(stderr, "[vulkan] pipeline cache: %.1f MB from %s\n", initial_size / 1048576.0, pipeline_cache_path);
+    if (pipeline_cache && pcci.initialDataSize) pipeline_cache_kept = initial_size;
     free(initial);
 
     /* a raw buffer of zeros */

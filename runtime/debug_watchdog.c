@@ -30,7 +30,7 @@ int rt_write_dump(const char *path, DWORD tid, EXCEPTION_POINTERS *e, DWORD wait
 
 static volatile U64 last_present;
 static volatile U64 presented;
-static volatile LONG paused, started = -1;
+static volatile LONG paused, started = -1, disarmed;
 static FILE *report;
 
 static void to_report(const char *text) { if (report) fputs(text, report); }
@@ -74,6 +74,7 @@ static DWORD WINAPI watchdog(void *unused) {
     for (;;) {
         Sleep(500);
         U64 now = GetTickCount64(), len = 0;
+        if (disarmed) return 0;   /* (the game is closing: watchdog_disarm) */
         if (paused || IsDebuggerPresent()) continue;
         switch (freeze_schedule_tick(&s, now, last_present, &len)) {
         case FREEZE_REPORT: write_report(len, s.reports == 1); break;
@@ -114,6 +115,22 @@ void watchdog_frame(void) {
     if (started <= 0) return;
     last_present = GetTickCount64();
     presented++;
+}
+
+/* (v0.5.5) The game is closing (the settings menu's Quit, the window's close: gpu_backend.c gfx_closing): no more reports.
+ * The close saves the shader and pipeline caches, which takes seconds with no frame presented: the watchdog took that
+ * for a freeze (0.5.4: after "[menu] quit", 400-1200 MB of Vulkan pipeline cache saved in 5-27 s, every save over 5 s
+ * with a freeze report written meanwhile), and its report and minidump - written while the cache was - made the save
+ * slower still. SSBU_WATCHDOG_QUIT=0: still armed while the game closes, as before. */
+void watchdog_disarm(void) {
+    const char *v = getenv("SSBU_WATCHDOG_QUIT");
+    if (v && *v == '0') return;
+    U64 since = GetTickCount64() - last_present;
+    if (started > 0 && since > 2000) {   /* (a close of a game already frozen - the player gave up on it: its report is wanted) */
+        fprintf(stderr, "[watchdog] stays on: no frame for %.1f s before the close\n", since / 1000.0);
+        return;
+    }
+    if (!InterlockedExchange(&disarmed, 1) && started > 0) fprintf(stderr, "[watchdog] off: the game is closing\n");
 }
 
 /* A dialog the game waits on (the software keyboard): not a freeze. */

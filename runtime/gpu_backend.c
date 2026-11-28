@@ -134,7 +134,8 @@ GfxBackend gfx_backend = {
 };
 
 void gfx_status_lines(void) { gfx_backend.status_lines(); }
-void gfx_closing(void) { gfx_backend.closing(); }
+void watchdog_disarm(void);   /* (debug_watchdog.c: a close saving its caches is not a freeze) */
+void gfx_closing(void) { watchdog_disarm(); gfx_backend.closing(); }
 DWORD gfx_lock_owner(void) { return gfx_backend.lock_owner(); }
 DWORD gfx_last_enter_thread(void) { return gfx_backend.last_enter_thread(); }
 void gfx_report_compiles(void (*line)(const char *text)) { gfx_backend.report_compiles(line); }
