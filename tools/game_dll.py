@@ -116,6 +116,10 @@ def tables_text(runtime):
                    f"#else\n__attribute__((weak)) void f_{a:x}_orig(Cpu *c) {{ rt_game_missing(c); }}\n#endif\n")
     out.append("static const RtGameOrig origs[] = {\n" + "".join(f"    {{0x{a:X}ull, f_{a:x}_orig}},\n" for a in addresses)
                + "    {0, 0}\n};\n\n")
+    if os.environ.get("SSBU_BUILD_COMMIT_CHECK", "1").strip() != "0":
+        out.append("/* The commit this library was linked from: tools/build_commit.py writes it over the 40 '?' right after the\n"
+                   " * link (SSBU_BUILD_COMMIT_CHECK); the program says it at start (runtime/hle_build_commit.c). */\n"
+                   'RT_GAME_EXPORT volatile const char rt_game_build_commit[] = "SSBU-BUILD-COMMIT:' + "?" * 40 + '";\n\n')
     out.append("extern const RtModule rt_module_main, rt_module_subsdk0, rt_module_sdk;\n"
                "static const RtModule *const boot[] = {&rt_module_main, &rt_module_subsdk0, &rt_module_sdk};\n\n"
                f"RT_GAME_EXPORT const RtGameTables *{ENTRY}(void) {{\n"

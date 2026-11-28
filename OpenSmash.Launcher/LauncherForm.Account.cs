@@ -157,7 +157,7 @@ namespace OpenSmash.Launcher
                 }
                 if (_account == null) return;
                 bool on = !FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt"));
-                var crash = CrashReport.SendIfAnyAsync(_account, _repo, started, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
+                var crash = CrashReport.SendIfAnyAsync(_account, _repo, started, on, BuildCommit.Reported(_repo), s => Updater.Log(_repo, s));
                 // (the session's performance summary: aggregates only, signed in only; config\telemetry.txt "off" stops it)
                 var perf = PerfReport.SendIfAnyAsync(_account, _repo, started, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
                 try { BeginInvoke(new Action(() => _ = AccountLoadGsp())); } catch (InvalidOperationException) { }   // (the GSP the game just earned)

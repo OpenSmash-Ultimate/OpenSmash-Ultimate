@@ -1257,6 +1257,12 @@ def needs_build(tree):
     built = max((os.path.getmtime(x) for x in programs if os.path.exists(x)), default=0)
     if not built:
         return "it isn't built"
+    # (SSBU_BUILD_COMMIT_CHECK, on unless 0) the commit build/ssbu.exe says it was built from, against the sources':
+    # an update whose build was skipped or failed left a program its dates call current (tools/build_commit.py)
+    import build_commit
+    why = build_commit.reason(tree, os.path.join(tree, "build", "ssbu.exe"))
+    if why:
+        return why
     for top in ("runtime", "tools"):
         for dp, dirs, files in os.walk(os.path.join(tree, top)):
             dirs[:] = [d for d in dirs if not d.startswith((".", "__pycache__"))]

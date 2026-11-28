@@ -46,7 +46,8 @@ namespace OpenSmash.Core
         public static string Line(string root)
         {
             string s = Source(root), g = Game(root);
-            return "LAUNCHER " + Launcher + "   ·   RECOMP " + (s.Length > 0 ? s : "?") + "   ·   GAME " + (g.Length > 0 ? g : "?");
+            // (the build's own commit after it when it is another: BuildCommit, SSBU_BUILD_COMMIT_CHECK)
+            return "LAUNCHER " + Launcher + "   ·   RECOMP " + (s.Length > 0 ? s : "?") + BuildCommit.Shown(root) + "   ·   GAME " + (g.Length > 0 ? g : "?");
         }
 
         /// <summary>the environment variable the launchers give the game at Play: their version, for its Esc menu</summary>
