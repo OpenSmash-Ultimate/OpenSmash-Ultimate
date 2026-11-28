@@ -1276,6 +1276,55 @@ static LONG WINAPI on_fault(EXCEPTION_POINTERS *e) {
     if (fault.go && SetEvent(fault.go)) for (;;) Sleep(INFINITE);   /* (the reporter ends the process) */
     crash_report(e, fault.tid);
 }
+
+/* (v0.5.5) The last chance, without Windows Error Reporting: what on_fault does not take, one line in play.log before
+ * the process ends - the code, its name, where (module +offset) and which thread - written with WriteFile from a
+ * stack buffer (no heap: it may be what broke, no C runtime lock: a thread may hold it). Then the search goes on, and
+ * the process ends with that code: the launcher, finding no report file, sends one made from the exit code and the end
+ * of play.log (OpenSmash.Core ExitCodeReport.cs).
+ *   covered, by on_fault (a report file): access violations, illegal instructions, stack overflows (while the
+ *     reporter's own thread can still run), integer division by zero, in-page errors;
+ *   covered here (a line in play.log): heap corruption (0xC0000374, raised as an exception by the heap), the
+ *     assertion and fail-fast exceptions (0xC0000420, 0xC0000602), a callback's fatal exception (0xC000041D), seen
+ *     first by a vectored handler; and any other exception nothing handles (a C++ exception out of a driver, a
+ *     breakpoint): the unhandled-exception filter, unless a library put its own in front later;
+ *   NOT catchable in the process: __fastfail (0xC0000409: /GS's stack buffer checks, Control Flow Guard, the C
+ *     runtime's invalid-parameter and abort() paths, drivers' own checks) ends it in the kernel with no handler
+ *     run; TerminateProcess from outside (Task Manager, taskkill, an anti-virus, a driver's watchdog), the
+ *     system's out-of-memory end, a power loss. Only the launcher's exit-code report sees those.
+ * OPENSMASH_EXIT_REPORT=0: none of this (nor play.log's flush once a second: host_main), as before. */
+static int exit_report_on(void) {
+    const char *v = getenv("OPENSMASH_EXIT_REPORT");
+    return !(v && (!strcmp(v, "0") || !_stricmp(v, "off")));
+}
+static void last_chance_line(EXCEPTION_POINTERS *e, const char *how) {
+    static volatile LONG once;
+    if (InterlockedExchange(&once, 1)) return;
+    DWORD code = e->ExceptionRecord->ExceptionCode;
+    const char *name = code == 0xC0000374 ? "heap corruption" : code == 0xC0000409 ? "stack buffer overrun" : code == 0xC0000420 ? "assertion failure"
+                       : code == 0xC0000602 ? "fail-fast exception" : code == 0xC000041D ? "fatal exception in a callback" : code == 0xE06D7363 ? "C++ exception"
+                       : code == 0x80000003 ? "breakpoint" : code == EXCEPTION_ACCESS_VIOLATION ? "access violation" : "exception";
+    u64 pc = (u64)e->ExceptionRecord->ExceptionAddress;
+    HMODULE mod = NULL;
+    char modname[MAX_PATH] = "?", line[640];
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)pc, &mod))
+        GetModuleFileNameA(mod, modname, sizeof modname);
+    const char *base = strrchr(modname, '\\') ? strrchr(modname, '\\') + 1 : modname;
+    int n = snprintf(line, sizeof line, "\n*** last chance (%s): exception %#lx (%s) at %s +%#llx, thread %lu, during %s; no crash report "
+                     "(the launcher sends one from the exit code)\n", how, code, name, base, pc - (u64)mod, GetCurrentThreadId(), phase);
+    DWORD wrote;
+    if (n > 0) WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)(n < (int)sizeof line ? n : (int)sizeof line - 1), &wrote, NULL);
+}
+static LONG WINAPI last_chance_first(EXCEPTION_POINTERS *e) {   /* (a vectored handler, the last one: codes that always end the process) */
+    DWORD code = e->ExceptionRecord->ExceptionCode;
+    if (!rt_probing && (code == 0xC0000374 || code == 0xC0000409 || code == 0xC0000420 || code == 0xC0000602 || code == 0xC000041D))
+        last_chance_line(e, "first");
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+static LONG WINAPI last_chance_unhandled(EXCEPTION_POINTERS *e) {   /* (nothing handled it: the process ends with its code) */
+    last_chance_line(e, "unhandled");
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 #else
 /* ---- Linux and macOS: faults come through signals; other threads' stacks through a signal
  * (Linux) or by stopping the thread (macOS) ------------------------------------------------ */
@@ -2509,6 +2558,8 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     crash_reporter_start();
     AddVectoredExceptionHandler(1, on_fault);
+    int exit_report = exit_report_on();
+    if (exit_report) { AddVectoredExceptionHandler(0, last_chance_first); SetUnhandledExceptionFilter(last_chance_unhandled); }
     if (getenv("SSBU_DEBUG_CAMERA_HUNT")) { AddVectoredExceptionHandler(1, hunt_fault); frame_hook_add(FRAME_HOOK_END, 300, NULL, hunt_scan, NULL); }
     dump_helper_start();
 #else
@@ -2542,7 +2593,15 @@ int main(int argc, char **argv) {
     /* Guest call depth becomes host call depth, so the guest runs on a thread with a large stack. */
     HANDLE t = CreateThread(NULL, 512ull << 20, guest_main, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
 #ifdef _WIN32
-    while (WaitForSingleObject(t, status_every ? status_every * 1000 : INFINITE) == WAIT_TIMEOUT) print_status();
+    if (!exit_report)
+        while (WaitForSingleObject(t, status_every ? status_every * 1000 : INFINITE) == WAIT_TIMEOUT) print_status();
+    else   /* (v0.5.5: stdout is fully buffered into a pipe or a file on Windows - _IOLBF is _IOFBF there - so its lines are
+            * flushed once a second, here, on a thread that does nothing else; a process that dies suddenly (exit_report_on)
+            * leaves at most a second of them out of play.log. stderr is unbuffered.) */
+        for (ULONGLONG status_at = GetTickCount64() + (ULONGLONG)status_every * 1000; WaitForSingleObject(t, 1000) == WAIT_TIMEOUT;) {
+            fflush(stdout);
+            if (status_every && GetTickCount64() >= status_at) { status_at += (ULONGLONG)status_every * 1000; print_status(); }
+        }
 #else
     (void)t;
     if (status_every > 0) CloseHandle(CreateThread(NULL, 0, status_thread, NULL, 0, NULL));
