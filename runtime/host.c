@@ -1157,6 +1157,14 @@ static struct { HANDLE go; EXCEPTION_POINTERS *e; DWORD tid; } fault;
 int kernel_fault_report(void (*line)(const char *), u64 g);    /* (kernel.c) */
 void kernel_thread_states(void (*line)(const char *text));     /* (kernel.c) */
 int profile_dump_threads(void (*line)(const char *text));      /* (debug_profile.c) */
+
+#define CRASH_OUT out
+#include "crash_address.h"   /* (crash_unknown_address: an address no loaded module holds, under "host pc") */
+static int unknown_address_on(void) {   /* SSBU_CRASH_UNLOADED=0: not, as before */
+    const char *v = getenv("SSBU_CRASH_UNLOADED");
+    return !(v && v[0] == '0');
+}
+
 static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
     DWORD code = e->ExceptionRecord->ExceptionCode;
     char name[96], report[MAX_PATH];
@@ -1207,10 +1215,16 @@ static _Noreturn void crash_report(EXCEPTION_POINTERS *e, DWORD tid) {
             x->Rax, x->Rcx, x->Rdx, x->Rbx, x->Rsp, x->Rbp, x->Rsi, x->Rdi, x->R8, x->R9, x->R10, x->R11, x->R12, x->R13, x->R14, x->R15);
         MEMORY_BASIC_INFORMATION mi;
         u64 lo = x->Rsp - 0xC0, hi = x->Rsp + 0x80;
-        if (VirtualQuery((void *)(uintptr_t)lo, &mi, sizeof mi) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))
-            && (u64)(uintptr_t)mi.BaseAddress + mi.RegionSize >= hi)
+        int stack_ok = VirtualQuery((void *)(uintptr_t)lo, &mi, sizeof mi) && mi.State == MEM_COMMIT && !(mi.Protect & (PAGE_GUARD | PAGE_NOACCESS))
+                       && (u64)(uintptr_t)mi.BaseAddress + mi.RegionSize >= hi;
+        if (stack_ok)
             for (u64 a = lo; a < hi; a += 32)
                 out("  stack %+5lld: %#llx %#llx %#llx %#llx\n", (long long)(a - x->Rsp), *(u64 *)(uintptr_t)a, *(u64 *)(uintptr_t)(a + 8), *(u64 *)(uintptr_t)(a + 16), *(u64 *)(uintptr_t)(a + 24));
+        /* (v0.5.5) code or data in no loaded module - a return into a hook whose DLL was unloaded (a 0.5.4 report:
+         * "? +0x7ff9..." and nothing more): what the memory there is, and the DLLs unloaded so far (crash_unknown_address) */
+        u64 data = code == EXCEPTION_ACCESS_VIOLATION && fault_addr >= 0x10000 && fault_addr != pc && !crash_in_module(fault_addr)
+                   && !(fault_addr >= RT_MEMBASE && fault_addr - RT_MEMBASE < ASPACE_SIZE) ? fault_addr : 0;
+        if (unknown_address_on() && (!mod || data)) { rt_probing = 1; crash_unknown_address(mod ? 0 : pc, data, stack_ok ? lo : 0, hi); rt_probing = 0; }
     }
     {   /* and the host frames above it */
         CONTEXT ctx = *e->ContextRecord;
