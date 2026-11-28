@@ -220,6 +220,36 @@ namespace OpenSmash.Launcher
             return proc;
         }
 
+        delegate bool WindowProc(IntPtr window, IntPtr data);
+        [DllImport("user32.dll")] static extern bool EnumWindows(WindowProc proc, IntPtr data);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+        [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint msg, IntPtr w, IntPtr l);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int capacity);
+        static bool IsGameWindow(IntPtr w) { var n = new StringBuilder(64); return GetClassName(w, n, n.Capacity) > 0 && n.ToString().Equals("ssbu", StringComparison.OrdinalIgnoreCase); }
+
+        /// <summary>(v0.5.5) the launcher wants the game closed: WM_CLOSE to its window (class "ssbu") first - the game's own close
+        /// (runtime/gpu_window.c: the session's summary with clean_exit true, the caches saved) - and Kill only when it
+        /// has not ended after waitMs (or has no window). Before, Kill at once: telemetry counted that as a crash.
+        /// OPENSMASH_CLEAN_EXIT=0: Kill at once, as before. True when it ended by itself.</summary>
+        public static bool Close(Process proc, int waitMs = 2000)
+        {
+            try
+            {
+                if (proc.HasExited) return true;
+                string v = (Environment.GetEnvironmentVariable("OPENSMASH_CLEAN_EXIT") ?? "").Trim();
+                bool asked = false;
+                if (!(v == "0" || v.Equals("off", StringComparison.OrdinalIgnoreCase)))
+                {
+                    uint id = (uint)proc.Id;
+                    EnumWindows((w, _) => { if (GetWindowThreadProcessId(w, out uint pid) != 0 && pid == id && IsGameWindow(w)) asked |= PostMessage(w, 0x0010, IntPtr.Zero, IntPtr.Zero); return true; }, IntPtr.Zero);
+                }
+                if (asked && proc.WaitForExit(waitMs)) return true;
+                proc.Kill();
+            }
+            catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { }
+            return false;
+        }
+
         /// <summary>psi (its output redirected) started, every line it writes appended to log. A game started again from
         /// its settings (runtime/hle_settings.c settings_restart) is a new process with the same output, so its lines go
         /// on into the same log after proc has ended.</summary>

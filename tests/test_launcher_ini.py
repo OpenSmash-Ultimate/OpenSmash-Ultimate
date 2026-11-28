@@ -259,6 +259,7 @@ class LauncherIniTests(unittest.TestCase):
 
 DRIVER = r'''
 #include "%s"
+void perf_session_clean_exit(void) {}   /* (debug_perf_session.c, not linked here: hle_settings.c restart) */
 /* driver <file> then edits: ini <section|-> <key> <value|-> | line <text>; "-" is NULL */
 int main(int argc, char **argv) {
     for (int i = 2; i < argc;) {

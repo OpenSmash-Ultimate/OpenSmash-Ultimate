@@ -210,3 +210,6 @@ int main(int argc, char **argv) {
     printf("%d checks, %d failed\n", checks, failures);
     return failures != 0;
 }
+
+/* (debug_perf_session.c, not linked here: the session summary's clean end, kernel.c svcExitProcess, gpu_menu.c Quit, hle_settings.c restart) */
+void perf_session_clean_exit(void) {}
