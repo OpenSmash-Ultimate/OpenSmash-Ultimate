@@ -506,6 +506,17 @@ static class Tests
         string text = File.ReadAllText(log);
         Check(text.Contains("starting the game again") && text.Contains("started again") && text.Contains("*** host exception (made up)"),
             "restart: the restarted game's lines are in the log at its end: " + text);
+        Check(ended.Result == 0, "restart: the exit code known is the first process's, 0: " + ended.Result);
+        // (v0.5.5) the exit code of a game that ended abnormally, for a report made from it (OpenSmash.Core ExitCodeReport)
+        var crashed = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        foreach (string a in new[] { "/d", "/c", "echo [rb] a made-up last line& exit -1073740791" }) crashed.ArgumentList.Add(a);
+        using var gone = GameFolder.StartLogged(crashed, Path.Combine(dir, "crashed.log"));
+        var code = GameFolder.Ended(gone!);
+        Check(code.Wait(15000) && code.Result == unchecked((int)0xC0000409) && OpenSmash.Core.ExitCodeReport.Abnormal(code.Result!.Value, true),
+            "exit code: a fast fail's 0xC0000409 reaches the crash report: " + (code.IsCompleted ? code.Result : null));
     }
 
     // The update check's release channel and the verdict after an update (Discord "Can't update", 2026-11-18): GitHub not

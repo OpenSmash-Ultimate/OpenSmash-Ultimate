@@ -247,6 +247,11 @@ namespace OpenSmash.Launcher
         /// (and HasExited) come with proc's own end, the first of them; WaitForExit() with no time limit waits for the end
         /// of the redirected output too, which a game started again keeps open until it ends (and all its lines are in
         /// the log by then).</summary>
-        public static Task Ended(Process proc) => Task.Run(() => { try { proc.WaitForExit(); } catch { } });
+        /// <returns>proc's exit code (a game started again from its settings: the first one's, 0), null if not known</returns>
+        public static Task<int?> Ended(Process proc) => Task.Run(() =>
+        {
+            try { proc.WaitForExit(); return (int?)proc.ExitCode; }
+            catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { return null; }
+        });
     }
 }

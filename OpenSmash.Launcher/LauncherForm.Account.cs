@@ -145,7 +145,7 @@ namespace OpenSmash.Launcher
             if (pass != null && File.Exists(pass.File)) pass.KeepFresh();
             _afterGame = Task.Run(async () =>
             {
-                await GameFolder.Ended(proc);
+                int? exit = await GameFolder.Ended(proc);   // (a crash without a report: one made from it, OpenSmash.Core ExitCodeReport.cs)
                 pass?.Dispose();
                 // (a crash in a mod's plugin: which mod, and the offer to turn it off - OpenSmash.Core CrashBlame.cs;
                 // signed in or not; OPENSMASH_CRASH_MOD_HINT=0: nothing, as before)
@@ -157,7 +157,7 @@ namespace OpenSmash.Launcher
                 }
                 if (_account == null) return;
                 bool on = !FileSaysOff(Path.Combine(_repo, "config", "crash_reports.txt"));
-                var crash = CrashReport.SendIfAnyAsync(_account, _repo, started, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
+                var crash = CrashReport.SendIfAnyAsync(_account, _repo, started, on, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s), exit);
                 // (the session's performance summary: aggregates only, signed in only; config\telemetry.txt "off" stops it)
                 var perf = PerfReport.SendIfAnyAsync(_account, _repo, started, Updater.InstalledCommit(_repo), s => Updater.Log(_repo, s));
                 try { BeginInvoke(new Action(() => _ = AccountLoadGsp())); } catch (InvalidOperationException) { }   // (the GSP the game just earned)

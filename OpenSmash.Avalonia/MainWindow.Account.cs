@@ -171,6 +171,20 @@ public sealed partial class MainWindow
         if (_pass != null && File.Exists(_pass.File)) _pass.KeepFresh();
     }
 
+    /// <summary>(v0.5.5) after the game: the report it wrote (reports/crash_*.txt, freeze_*, rollback_*), or one made from its
+    /// exit code when it crashed without writing one (OpenSmash.Core ExitCodeReport), sent as the WinForms launcher sends
+    /// them: signed in only, config/crash_reports.txt "off" stops it, the same size caps and scrubbing. This launcher sent
+    /// none before: OPENSMASH_EXIT_REPORT=0 keeps it so.</summary>
+    internal async Task<bool> AccountCrashReport(string root, DateTime started, int exit, string log)
+    {
+        if (!ExitCodeReport.On(Environment.GetEnvironmentVariable(ExitCodeReport.Variable)) || _account == null || !AccountMode) return false;
+        bool on;
+        try { string f = Path.Combine(root, "config", "crash_reports.txt"); on = !(File.Exists(f) && File.ReadAllText(f).Trim().StartsWith("off", StringComparison.OrdinalIgnoreCase)); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { on = true; }
+        try { return await CrashReport.SendIfAnyAsync(_account, root, started, on, Updater.InstalledCommit(root), s => Updater.Log(root, s), exit, log); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or HttpRequestException or AccountException) { Updater.Log(root, "crash report not sent: " + e.Message); return false; }
+    }
+
     /// <summary>the game exited: no more renewal; the GSP it earned read again</summary>
     internal void AccountGameEnded(string root)
     {

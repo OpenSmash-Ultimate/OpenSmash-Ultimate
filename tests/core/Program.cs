@@ -21,6 +21,56 @@ static class Program
         if (ok) passed++; else { failed++; Console.WriteLine("FAIL " + what); }
     }
 
+    // ---- a crash without a report: one made from the game's exit code (ExitCodeReport.cs, CrashReport.Pending)
+    static void ExitCodeChecks()
+    {
+        Check(ExitCodeReport.On(null) && ExitCodeReport.On("1") && !ExitCodeReport.On("0") && !ExitCodeReport.On(" OFF "), "exit report: on unless 0/off");
+        foreach (uint c in new uint[] { 0xC0000409, 0xC0000374, 0xC0000005, 0xC00000FD, 0xE06D7363, 0x80000003, 0x40000015, 0xC0000420, 0xC0000602 })
+            Check(ExitCodeReport.Abnormal(unchecked((int)c), true), "exit report: a crash code is reported: " + c.ToString("X8"));
+        foreach (int c in new[] { 0, 1, 2, 3, 4, 99, -1, unchecked((int)0xC000013A), 0x40010004 })
+            Check(!ExitCodeReport.Abnormal(c, true), "exit report: a normal quit or an end from outside is not: " + c);
+        Check(ExitCodeReport.Abnormal(5, true) && ExitCodeReport.Abnormal(6, true) && ExitCodeReport.Abnormal(5, false), "exit report: the runtime's own crash exits (no report file came)");
+        Check(ExitCodeReport.Abnormal(139, false) && ExitCodeReport.Abnormal(134, false) && ExitCodeReport.Abnormal(135, false) && !ExitCodeReport.Abnormal(137, false)
+              && !ExitCodeReport.Abnormal(143, false) && !ExitCodeReport.Abnormal(0, false) && !ExitCodeReport.Abnormal(1, false) && !ExitCodeReport.Abnormal(138, false),
+              "exit report: Linux's crash signals, not SIGKILL/SIGTERM");
+        Check(ExitCodeReport.Abnormal(138, false, true) && !ExitCodeReport.Abnormal(135, false, true), "exit report: macOS's SIGBUS is 10");
+        Check(ExitCodeReport.Describe(unchecked((int)0xC0000409), true) == "exit code 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN)", "exit report: " + ExitCodeReport.Describe(unchecked((int)0xC0000409), true));
+        Check(ExitCodeReport.Describe(unchecked((int)0xC0000374), true) == "exit code 0xC0000374 (STATUS_HEAP_CORRUPTION)", "exit report: heap corruption named");
+        Check(ExitCodeReport.Describe(unchecked((int)0xC1234567), true) == "exit code 0xC1234567", "exit report: an unknown code by its number");
+        Check(ExitCodeReport.Describe(139, false) == "exit code 139 (signal 11 SIGSEGV)", "exit report: " + ExitCodeReport.Describe(139, false));
+        string root = Path.Combine(Path.GetTempPath(), "os-core-exit-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "build"));
+            Directory.CreateDirectory(Path.Combine(root, "reports"));
+            string log = Path.Combine(root, "build", "play.log");
+            var sb = new StringBuilder("[gpu] Vulkan device: Made Up GPU 9000\n");
+            for (int i = 0; sb.Length < 64 * 1024; i++) sb.Append("[rb] made-up line ").Append(i).Append('\n');
+            sb.Append("[rb] the last made-up line before the end\n");
+            File.WriteAllText(log, sb.ToString());
+            DateTime started = DateTime.UtcNow.AddSeconds(-5);
+            int ff = unchecked((int)0xC0000409);
+            var p = CrashReport.Pending(root, started, ff, true, false, null);
+            Check(p != null && p.Value.Kind == "crash" && p.Value.File == null && p.Value.ExitCode == ff, "exit report: a fast fail with no report file is sent as a crash");
+            Check(CrashReport.Pending(root, started, ff, true, false, "0") == null, "exit report: OPENSMASH_EXIT_REPORT=0, nothing as before");
+            Check(CrashReport.Pending(root, started, 0, true, false, null) == null && CrashReport.Pending(root, started, null, true, false, null) == null
+                  && CrashReport.Pending(root, started, -1, true, false, null) == null, "exit report: a normal quit, an unknown code, the launcher's kill: nothing");
+            string text = CrashReport.Clean(ExitCodeReport.Text(ff, true, false, log), root);
+            Check(CrashReport.Title(text, "crash") == "exit code 0xC0000409 (STATUS_STACK_BUFFER_OVERRUN)", "exit report: its title: " + CrashReport.Title(text, "crash"));
+            Check(text.Contains("fast fail") && text.EndsWith("[rb] the last made-up line before the end\n") && Encoding.UTF8.GetByteCount(text) < ExitCodeReport.TailBytes + 1024
+                  && text.Contains("\n[rb] made-up line ") && !text.Contains("Made Up GPU"), "exit report: the meaning and play.log's last lines, whole, within the cap");
+            Check(ExitCodeReport.Text(ff, true, false, Path.Combine(root, "none.log")).Contains("(no play.log)"), "exit report: no log");
+            // a report the game wrote comes first: the exit code is not used then
+            string crash = Path.Combine(root, "reports", "crash_20261128_120000.txt");
+            File.WriteAllText(crash, "\n*** host exception 0xc0000005 during nnMain: reading address 0x20 (made up)\n");
+            p = CrashReport.Pending(root, started, 5, true, false, null);
+            Check(p != null && p.Value.File == crash && p.Value.Kind == "crash" && p.Value.ExitCode == null, "exit report: the game's own report is sent, not the exit code's");
+            File.SetLastWriteTimeUtc(crash, started.AddMinutes(-10));
+            Check(CrashReport.Pending(root, started, 5, true, false, null)?.File == null, "exit report: an older report does not count: code 5 with none in this run");
+        }
+        finally { try { Directory.Delete(root, true); } catch { } }
+    }
+
     // ---- "Verify game files" (FileCheck.cs) on a made-up install: whole, then each kind of damage and its repair
     static void FileChecks()
     {
@@ -897,6 +947,7 @@ static class Program
         }
         finally { try { Directory.Delete(logDir, true); } catch { } }
 
+        ExitCodeChecks();
         FileChecks();
 
         Console.WriteLine($"{passed} passed, {failed} failed");
