@@ -990,6 +990,19 @@ static void pane_place(Cpu *c) {
      * with two fighters), stays in the 16:9 view, the side areas open. Moved by the side rules they left a gap in the
      * middle; widened, they stretched (owner, 2026-11-15: open ends until there is a better idea) */
     int vs_bg = parent && !strncmp(name, "set_panel_bg_", 13);
+    /* (menus a cursor walks: Training's pause menu - menu_L, its settings list and menu_L_staying's Exit (btn_finish,
+     * hit_finish) - and the top bar's buttons, anim_T_00's button set_btn1_00.., and the online waiting room's
+     * option_menu (its Leave: moved 960 px to the picture's edge, it could not be picked, owner 2026-11-28).
+     * The side rules took the ones reaching the left edge (Exit, three of the five top buttons) to the picture's edge
+     * and left the rest: the game picks the next item by where it is, so up from the list found nothing and Exit
+     * could not be reached on any shape but 16:9 (owner, 2026-11-28). Their panes are not put against the
+     * picture's edges; parked a screen away (the pause menu while the fight runs) they are parked a picture away, below) */
+    int menu = 0;
+    for (u64 q = parent; q && !menu; q = *P(u64, q + 0x18)) {
+        const char *qn = P(char, q + 0xb0);
+        menu = !strcmp(qn, "menu_L") || !strcmp(qn, "anim_T_00") || !strcmp(qn, "option_menu");
+    }
+    if (!strcmp(name, "menu_L") || !strcmp(name, "anim_T_00") || !strcmp(name, "option_menu")) menu = 1;
     if (timeup && on && g > 1.001f) {
         x = P(float, pane + 0x30);
         x0 = *x;
@@ -1014,7 +1027,10 @@ static void pane_place(Cpu *c) {
             if (!pane_extent(pane, &l, &r, 0)) l = r = 0;   /* (nothing visible under it: left where it is) */
             int right = r >= 960 - 120, left = l <= -960 + 120;
             if (l >= 960 || r <= -960) *x = x0 * g;                        /* (parked off the screen: off the picture) */
-            else if (right != left) *x = x0 + (right ? 1 : -1) * 960 * (g - 1);   /* (against one edge: against the picture's) */
+            /* (a menu's panes: not against the picture's edge - its cursor walks them by place. Put away, the menu is parked a
+             * screen away by its screen-sized root (Training's pause menu while the fight runs), which the screen rule above
+             * parks a picture away: left at a screen, the panel stood in the side area beside the fight, owner 2026-11-28) */
+            else if (right != left && !menu) *x = x0 + (right ? 1 : -1) * 960 * (g - 1);   /* (against one edge: against the picture's) */
         }
     }
     static int moved_log = -1;   /* SSBU_DEBUG_PANES_MOVED=1 (HUD research): each pane name the side, arrow or TIME! rules move, once, with its parents */
