@@ -417,6 +417,15 @@ def _shown(tree):
         return None
 
 
+def _plugin_list(tree, log):
+    """The plugins the game runs itself for the mode (skyline.write_list: the mods' own left out in HDR mode).
+    Whether an apply is due to make it (no plugins_all.txt yet: an OpenSmash from before)."""
+    import skyline
+    if skyline.write_list(tree.root, log) is not None:
+        return False
+    return os.path.exists(os.path.join(tree.root, "dump", "skyline", "plugins.txt"))   # (none at all: nothing to make)
+
+
 def set_only(tree, on, log=print):
     """The launcher's HDR mode, on or off: ARCropolis' "HDR" workspace (HDR's folders alone, tools/arc_workspace.py)
     made the active one, or the one before it again - every mod's switch stays as it is, and so do the plugins the
@@ -443,6 +452,7 @@ def set_only(tree, on, log=print):
         state = tree.load()
         state["hdr_only"] = {"workspace": True, "mods": list(own_mods(tree))}
         tree.save(state)
+        need = _plugin_list(tree, log) or need
         shown = _shown(tree)
         need = need or shown is None or not all(m in {x.split("/")[0] for x in shown} for m in own_mods(tree))
         if not need:
@@ -458,6 +468,7 @@ def set_only(tree, on, log=print):
         if isinstance(state.get("hdr_only"), dict):
             state.pop("hdr_only")
             tree.save(state)
+        need = _plugin_list(tree, log) or need
         arc_workspace.activate(tree.root, False, log)
         log("HDR mode: off - ARCropolis' workspace from before it")
     if not need:

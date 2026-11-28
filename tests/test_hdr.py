@@ -242,6 +242,22 @@ class HdrOnly(unittest.TestCase):
         self.assertFalse(hdr.status(self.tree)['only'])
         self.assertFalse(hdr.set_only(self.tree, False, lambda s: None))
 
+    def test_hdr_mode_leaves_the_mods_own_plugins_out(self):
+        """A mod's plugin with a name of its own runs whatever ARCropolis' workspace says (Mother Smash FX's: HDR's
+        matches crashed in Smashline): in HDR mode the game's list has only the standard plugins and HDR's."""
+        import skyline
+        arc_config(self.root)
+        self.package(self.root / 'pkg')
+        hdr.install(self.tree, str(self.root / 'pkg'), lambda s: None)
+        sky = self.root / 'dump' / 'skyline'
+        (sky / 'plugins_all.txt').write_text('arcropolis\t(standard) libarcropolis.nro\nsmashline\t(standard) libsmashline_plugin.nro\n'
+                                             'mother_smash_fx\tMother Smash FX\n')
+        (sky / 'plugins.txt').write_text('arcropolis\nsmashline\nmother_smash_fx\n')
+        self.assertFalse(hdr.set_only(self.tree, True, lambda s: None) and False)
+        self.assertEqual((sky / 'plugins.txt').read_text().split(), ['arcropolis', 'smashline'])
+        hdr.set_only(self.tree, False, lambda s: None)
+        self.assertEqual((sky / 'plugins.txt').read_text().split(), ['arcropolis', 'smashline', 'mother_smash_fx'])
+
     def test_os_mods_switches_play_mods_in_hdr_mode(self):
         import os_mods
         arc_config(self.root)

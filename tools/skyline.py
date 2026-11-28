@@ -431,6 +431,7 @@ def sync(tree, log=print, jobs=1):
             f.writelines(h + "\n" for h in missing)
     record = load_record(p)
     names = []
+    owner = {}   # (each plugin's mod: plugins_all.txt, write_list)
     direct = set()
     skip = set()   # (dump/skyline/skip.txt: plugins left out, by module name or mod-relative file - one that does not run yet)
     if os.path.exists(os.path.join(p.skyline, "skip.txt")):
@@ -449,6 +450,7 @@ def sync(tree, log=print, jobs=1):
             direct.add(name)
         if name not in names:
             names.append(name)
+            owner[name] = mod
             log(f"{mod}: plugin {os.path.basename(source)} -> {name}")
     prune_patches(p, set(names), log)
     with open(p.record, "w", encoding="utf-8") as f:
@@ -498,14 +500,39 @@ def sync(tree, log=print, jobs=1):
     # not chainload candidates and must stay in the direct-load list, in dependency order.
     if any(m == "(standard) libarcropolis.nro" for m, _s in turned_on(tree)):
         names = [n for n in names if n in direct]
+    with open(os.path.join(p.skyline, "plugins_all.txt"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("".join(f"{n}\t{owner.get(n, '')}\n" for n in names))
+    write_list(tree, log)
+    missing = [n for n in names if not built_in(tree, n)]
+    if missing:
+        log("not in the game yet (build them: Mods app > Build plugins into the game, or tools/skyline.py build): " + ", ".join(missing))
+    return names
+
+
+def write_list(tree, log=print):
+    """dump/skyline/plugins.txt, the plugins the game runs itself (not ARCropolis' chainload), from plugins_all.txt
+    (sync's): all of them, but in the launcher's HDR mode (mods.hdr_mode) only the standard ones and HDR's - a mod's
+    plugin with a name of its own (not plugin.nro) runs whatever ARCropolis' workspace says, and one made for the
+    game as it is (Mother Smash FX's, on Smashline) crashes HDR's matches. The game reads it as it starts, so this
+    needs no build. The names written, or None without plugins_all.txt."""
+    import mods
+    p = Paths(tree)
+    try:
+        with open(os.path.join(p.skyline, "plugins_all.txt"), encoding="utf-8") as f:
+            rows = [ln.rstrip("\n").split("\t") + [""] for ln in f if ln.strip()]
+    except OSError:
+        return None
+    t = mods.Tree(tree)
+    hdr = mods.hdr_mode(t.load())
+    keep = set(mods.hdr_seen(t))
+    names = [r[0] for r in rows if not hdr or r[1].startswith("(standard) ") or r[1] in keep]
+    if hdr and len(names) < len(rows):
+        log("HDR mode: the mods' own plugins left out: " + ", ".join(r[0] for r in rows if r[0] not in names))
     text = "".join(f"{n}\n" for n in names)
     old = open(p.list, encoding="utf-8").read() if os.path.exists(p.list) else ""
     if text != old:
         with open(p.list, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
-    missing = [n for n in names if not built_in(tree, n)]
-    if missing:
-        log("not in the game yet (build them: Mods app > Build plugins into the game, or tools/skyline.py build): " + ", ".join(missing))
     return names
 
 
