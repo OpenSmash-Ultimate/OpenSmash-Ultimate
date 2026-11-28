@@ -305,6 +305,9 @@ static void sd_hold_arm(Cpu *c);
 static void sd_hold_frame(Cpu *c);
 static void sd_hold_end(const char *why);
 static void sd_hold_fight(void);
+static void dcd_pre_start(void);   /* (SSBU_RB_DCDEFER_PRE: what the game gives back kept committed from the set-up's copy on, below) */
+static void dcd_pre_fight(int deferred);
+static void dcd_pre_drop(const char *why);
 static void ms_fight_start(void);   /* (OpenSmash mastery points: what this game saw of the match, below) */
 static void ms_fight_end(void);
 static void ms_sample(void);
@@ -351,8 +354,8 @@ static void safe_point(Cpu *c, uintptr_t sp) {
         S.idle = rb_idle();
         if (!S.idle) { void rb_state_map_fight(int on); rb_state_map_fight(1); }   /* (hle_rb_state.c: the fight's first save turns the state map on) */
         /* (kernel.c SSBU_RB_DCDEFER: an online rollback fight keeps what the game gives back committed until it ends) */
-        if (!S.idle && net_mode == 2) { void kernel_rb_defer_fight(int on); kernel_rb_defer_fight(1); }
-        else fprintf(stderr, "[rb] this fight needs no savestates (run-ahead off, no rollback): no per-frame work\n");
+        if (!S.idle && net_mode == 2) { void kernel_rb_defer_fight(int on); kernel_rb_defer_fight(1); dcd_pre_fight(1); }
+        else { dcd_pre_fight(0); fprintf(stderr, "[rb] this fight needs no savestates (run-ahead off, no rollback): no per-frame work\n"); }
         summary("fight start");   /* (clears the window; its numbers are all zero) */
         if (net_mode == 2) net_gone_reset();
         online_fight_start();
@@ -3666,7 +3669,44 @@ static double pre_peer_ms[RBN_PLAYERS];   /* (when it last moved) */
 static double pre_waited_ms;
 static long long pre_waits;
 static u32 pre_logic0, pre_logic_last;   /* (the logic frame at the set-up, and on the last frame before the fight) */
+/* ---- (0.5.5) SSBU_RB_DCDEFER_PRE (on unless 0; with SSBU_RB_DCDEFER on): from the copy at the set-up ----
+ * kernel.c's SSBU_RB_DCDEFER (#632) keeps what the game gives back (UnmapPhysicalMemory) committed during an online
+ * rollback fight, so a thread a load does not put back never reads a page gone from under it. It was turned on at
+ * the fight's start only, and the copies before the fight (net_pre_fight: the whole copy at the set-up, then one
+ * every PRE_EVERY frames through the loading, the entrances and the countdown) are taken by the rollback's copy
+ * threads while the guest's threads run: a report of 0.5.4 (no mods) had a copy thread read a page a guest thread
+ * had given back 14 ms before, at "before the fight: frame 30". Now it is on from that set-up copy: the fight that
+ * follows takes it over and turns it off at its end as before (its line counts the pages of both); a set-up no
+ * fight follows (another set-up, a sudden death's hold ended, a fight without rollback) lets them go then. 0: from
+ * the fight's start only, as 0.5.4. */
+static int dcd_pre_on;   /* (turned on by the set-up's copy, no fight has taken it over yet) */
+static int dcd_pre_mode(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("SSBU_RB_DCDEFER_PRE"); v = !(e && *e == '0'); }
+    return v;
+}
+static void dcd_pre_start(void) {
+    if (!dcd_pre_mode() || dcd_pre_on || S.in_fight) return;
+    void kernel_rb_defer_fight(int on);
+    kernel_rb_defer_fight(1);
+    dcd_pre_on = 1;
+    fprintf(stderr, "[rb] before the fight: what the game gives back is kept committed from the set-up's copy on (SSBU_RB_DCDEFER_PRE)\n");
+}
+/* (the fight's start) deferred: the fight keeps it on and ends it; else (a fight with no rollback) let go now */
+static void dcd_pre_fight(int deferred) {
+    if (!dcd_pre_on) return;
+    dcd_pre_on = 0;
+    if (!deferred) { void kernel_rb_defer_fight(int on); kernel_rb_defer_fight(0); }
+}
+static void dcd_pre_drop(const char *why) {
+    if (!dcd_pre_on || S.in_fight) return;
+    dcd_pre_on = 0;
+    fprintf(stderr, "[rb] before the fight: %s with no fight: what was kept committed since the set-up is let go\n", why);
+    void kernel_rb_defer_fight(int on);
+    kernel_rb_defer_fight(0);
+}
 static void net_pre_reset(void) {
+    dcd_pre_drop("a new set-up");
     pre_done = 0; pre_quiet = 0; pre_frames = 0; memset(ready_from, 0, sizeof ready_from); all_ready = 0;
     for (int p = 0; p < RBN_PLAYERS; p++) { pre_peer[p] = -1; pre_peer_ms[p] = 0; }
     pre_waited_ms = 0; pre_waits = 0;
@@ -3815,6 +3855,7 @@ static void net_pre_fight(Cpu *c, u64 frame) {
     if (!barrier) {
         void rb_ring_drop(void);
         if (pre_frames == 1) {
+            dcd_pre_start();   /* (before the copy: its threads read while the guest's run, SSBU_RB_DCDEFER_PRE) */
             double t0 = now_ms();
             rb_save_tag = 0xFFFFFFFFu;
             int saved = rb_save(c, frame);
@@ -3854,6 +3895,7 @@ static void net_pre_fight(Cpu *c, u64 frame) {
                 pre_quiet == PRE_QUIET ? ": loading done" : "");
     if (pre_quiet < PRE_QUIET) return;
     pre_done = 1;
+    dcd_pre_start();   /* (SSBU_RB_DCDEFER_PRE: before the copy) */
     /* (1) the whole copy, here at the end of loading */
     double t0 = now_ms();
     rb_save_tag = 0xFFFFFFFFu;   /* (no fight frame's: let go at once anyway) */
@@ -4143,6 +4185,7 @@ static void sd_hold_arm(Cpu *c) {
 static void sd_hold_end(const char *why) {
     sd_holding = 0;
     net_countdown = 0;
+    dcd_pre_drop("a sudden death's hold ended");
     fprintf(stderr, "[rb] sudden death: %s: the match is over\n", why);
     online_restore();
     if (net_mode == 2) net_left_send();
