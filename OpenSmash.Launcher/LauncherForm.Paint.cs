@@ -57,6 +57,12 @@ namespace OpenSmash.Launcher
             ["renderer"] = "Auto: Vulkan on AMD, NVIDIA and Intel cards, Direct3D 11 on others, and Direct3D 11 whenever Vulkan cannot start.",
             ["hide_cursor"] = "Hides the pointer over the game after 2 seconds without moving it.",
             ["overlay"] = "The frame rate in the corner. F1 shows or hides it while playing.",
+            ["theme_preset"] = "Built-in palettes and your saved themes. Manual color edits are kept as custom colors.",
+            ["theme_save"] = "Save all three colors as a named preset. Existing names ask before replacement.",
+            ["theme_accent"] = "Buttons and highlights. Click to open the color picker.",
+            ["theme_background"] = "Click to open the color picker.",
+            ["theme_text"] = "Pick a color readable against your background.",
+            ["theme_reset"] = "Restore the original launcher colors.",
             ["ui_language"] = "The launcher and external menu share this language. The game language is set separately.",
             ["volume"] = "The game's whole sound (display.ini volume, the same setting as the in-game menu's Volume row). 100 is full. It applies the next time you press Play.",
             ["name"] = "What other players see. Leave it empty and the game picks one.",
@@ -1838,7 +1844,13 @@ namespace OpenSmash.Launcher
                             Theme.Label(g, set.Text ? val : val.ToUpperInvariant(), valueFont, A(!enabled ? Theme.Dim : hint ? Theme.Muted : Theme.Text), ctlX + 20 * s, cy, ctlH, valueSpacing);
                             g.Restore(valueClip);
                         }
-                        if (!set.Text)
+                        if (ThemeColorKeys.Contains(set.Key) && ColorTranslatorTry(_iniValues.GetValueOrDefault(set.Key, "")) is { } swatch)
+                        {   // (Settings > Theme: the color itself where the list's arrow is)
+                            float sw = ctlH - 16 * s;
+                            using (var b = new SolidBrush(A(swatch))) g.FillRectangle(b, ctlX + ctlW - 22 * s - sw, cy + 8 * s, sw, sw);
+                            using (var pen = new Pen(A(Theme.Mix(Theme.Line, Theme.Text, .4f)), Math.Max(1, s))) g.DrawRectangle(pen, ctlX + ctlW - 22 * s - sw, cy + 8 * s, sw, sw);
+                        }
+                        else if (!set.Text && set.Key is not ("theme_save" or "theme_reset"))   // (buttons, not lists: no arrow)
                         {
                             float chx = ctlX + ctlW - 32 * s, chy = cy + ctlH / 2, ca = 4.5f * s, dir = isOpen ? -1 : 1;
                             using (var pen = new Pen(A(isOpen ? Theme.Accent : Theme.Mix(Theme.Muted, Theme.Text, fh)), Math.Max(1.2f, 1.6f * s)))
